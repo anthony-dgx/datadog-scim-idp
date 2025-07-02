@@ -8,16 +8,17 @@ from typing import Dict, Any, Optional
 import time
 from datetime import datetime
 
-# Initialize Datadog
-initialize(
-    api_key=os.getenv("DD_API_KEY", os.getenv("DD_BEARER_TOKEN")),
-    app_key=os.getenv("DD_APP_KEY", ""),
-    statsd_host=os.getenv("DD_STATSD_HOST", "localhost"),
-    statsd_port=int(os.getenv("DD_STATSD_PORT", 8125))
-)
+# Initialize Datadog for metrics (agent will collect logs from stdout)
+api_key = os.getenv("DD_API_KEY", os.getenv("DD_BEARER_TOKEN"))
+if api_key:
+    initialize(
+        api_key=api_key,
+        statsd_host=os.getenv("DD_DOGSTATSD_HOST", os.getenv("DD_AGENT_HOST", "localhost")),
+        statsd_port=int(os.getenv("DD_STATSD_PORT", 8125))
+    )
 
 class DatadogLogHandler(logging.Handler):
-    """Custom log handler that sends structured logs to Datadog"""
+    """Custom log handler that outputs structured JSON logs for Datadog agent collection"""
     
     def __init__(self, service_name: str = "scim-demo", environment: str = "development"):
         super().__init__()
@@ -25,17 +26,22 @@ class DatadogLogHandler(logging.Handler):
         self.environment = environment
     
     def emit(self, record):
-        """Send log record to Datadog"""
+        """Output structured log record for Datadog agent to collect"""
         try:
+            # Build the log entry in Datadog format
             log_entry = {
-                "timestamp": datetime.utcnow().isoformat(),
-                "level": record.levelname,
-                "service": self.service_name,
-                "environment": self.environment,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "level": record.levelname.upper(),
                 "message": record.getMessage(),
-                "logger": record.name,
-                "thread": record.thread,
-                "process": record.process,
+                "service": self.service_name,
+                "ddsource": "python",
+                "ddtags": f"env:{self.environment},service:{self.service_name},logger:{record.name}",
+                "logger": {
+                    "name": record.name,
+                    "thread": record.thread,
+                    "process": record.process,
+                },
+                "hostname": os.getenv("HOSTNAME", "scim-demo")
             }
             
             # Add extra fields if present
@@ -46,17 +52,16 @@ class DatadogLogHandler(logging.Handler):
             span = tracer.current_span()
             if span:
                 log_entry.update({
-                    "trace_id": span.trace_id,
-                    "span_id": span.span_id,
+                    "dd.trace_id": str(span.trace_id),
+                    "dd.span_id": str(span.span_id),
                 })
             
-            # Send to Datadog (in a real implementation, you'd use the Datadog API)
-            # For now, we'll log to console with DD format
-            print(f"DD_LOG: {json.dumps(log_entry, indent=2)}")
+            # Output as JSON to stdout for Datadog agent to collect
+            print(json.dumps(log_entry), flush=True)
             
         except Exception as e:
             # Don't let logging errors break the application
-            print(f"Logging error: {e}")
+            print(f"Logging error: {e}", flush=True)
 
 def setup_logging():
     """Configure structured logging for the application"""

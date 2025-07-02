@@ -86,7 +86,7 @@ Update `DD_SCIM_BASE_URL` based on your Datadog site:
    # Edit .env with your Datadog API key
    ```
 
-2. **Start the application**:
+2. **Start the application** (includes Datadog agent):
    ```bash
    docker-compose up --build
    ```
@@ -95,6 +95,13 @@ Update `DD_SCIM_BASE_URL` based on your Datadog site:
    - **Frontend**: http://localhost:3000
    - **Backend API**: http://localhost:8000
    - **API Documentation**: http://localhost:8000/docs
+   - **Datadog Agent**: Runs automatically in background for log collection
+
+**What's Running:**
+- 🐘 **PostgreSQL**: Database on port 5433
+- 🐍 **FastAPI Backend**: API server with comprehensive logging
+- ⚛️ **React Frontend**: Modern UI with Datadog styling
+- 🐕 **Datadog Agent**: Automatic log and metric collection
 
 ## 📖 Demo Walkthrough
 
@@ -224,9 +231,9 @@ scim-demo/
 - `GET /health` - Health check endpoint
 - `GET /docs` - API documentation (Swagger UI)
 
-## 📊 Comprehensive Logging & Monitoring
+## 📊 Comprehensive Logging & Monitoring with Datadog Agent
 
-The application includes comprehensive logging that sends all actions and SCIM payloads to Datadog for monitoring and debugging.
+The application includes comprehensive logging with a **Datadog agent** that automatically collects all logs and sends them to Datadog for monitoring and debugging.
 
 ### 🔍 What Gets Logged
 
@@ -273,22 +280,31 @@ All logs are structured JSON with the following fields:
 }
 ```
 
-### 🔧 Logging Configuration
+### 🔧 Datadog Agent Configuration
 
-Add these environment variables to your `.env` file for full logging:
+The application includes a **Datadog agent container** that automatically collects logs from all services. Add these environment variables to your `.env` file:
 
 ```env
 # Required for SCIM operations
 DD_BEARER_TOKEN=your_datadog_api_key_here
 
-# Optional: Enhanced logging and monitoring
+# Required for Datadog agent (logs and metrics)
 DD_API_KEY=your_datadog_api_key_here
-DD_APP_KEY=your_datadog_app_key_here
+DD_SITE=datadoghq.com
 DD_SERVICE_NAME=scim-demo
 DD_ENV=development
-DD_STATSD_HOST=localhost
-DD_STATSD_PORT=8125
+
+# Agent configuration (auto-configured in Docker)
+DD_AGENT_HOST=datadog-agent
+DD_DOGSTATSD_HOST=datadog-agent
 ```
+
+**Benefits of Agent-Based Logging:**
+- ✅ **Local buffering** - No log loss during network issues
+- ✅ **Automatic collection** - Picks up all container logs automatically
+- ✅ **Better performance** - No blocking HTTP calls from application
+- ✅ **Rich metadata** - Container info, labels, and auto-tagging
+- ✅ **APM integration** - Automatic trace correlation
 
 ### 📈 Metrics & Dashboards
 

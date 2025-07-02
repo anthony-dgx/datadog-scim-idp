@@ -1,4 +1,29 @@
 services:
+  # Datadog Agent for log collection and monitoring
+  datadog-agent:
+    image: gcr.io/datadoghq/agent:7
+    container_name: scim_datadog_agent
+    environment:
+      - DD_API_KEY=${DD_API_KEY}
+      - DD_SITE=${DD_SITE:-datadoghq.com}
+      - DD_LOGS_ENABLED=true
+      - DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL=true
+      - DD_CONTAINER_EXCLUDE="name:datadog-agent"
+      - DD_APM_ENABLED=true
+      - DD_APM_NON_LOCAL_TRAFFIC=true
+      - DD_DOGSTATSD_NON_LOCAL_TRAFFIC=true
+      - DD_AC_EXCLUDE="name:datadog-agent"
+      - DD_HOSTNAME=scim-demo-stack
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc/:/host/proc/:ro
+      - /opt/datadog-agent/run:/opt/datadog-agent/run:rw
+      - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
+    ports:
+      - "8126:8126"  # APM traces
+      - "8125:8125/udp"  # StatsD metrics
+    restart: unless-stopped
+
   db:
     image: postgres:15-alpine
     container_name: scim_postgres
@@ -15,6 +40,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    labels:
+      com.datadoghq.ad.logs: '[{"source": "postgresql", "service": "scim-demo-db"}]'
+    depends_on:
+      - datadog-agent
 
   backend:
     build:
@@ -27,14 +56,21 @@ services:
       - DATABASE_URL=postgresql://scim_user:scim_password@db:5432/scim_demo
       - DD_SCIM_BASE_URL=${DD_SCIM_BASE_URL}
       - DD_BEARER_TOKEN=${DD_BEARER_TOKEN}
+      - DD_AGENT_HOST=datadog-agent
+      - DD_TRACE_AGENT_HOSTNAME=datadog-agent
+      - DD_DOGSTATSD_HOST=datadog-agent
     ports:
       - "8000:8000"
     depends_on:
       db:
         condition: service_healthy
+      datadog-agent:
+        condition: service_started
     volumes:
       - ./backend:/app
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    labels:
+      com.datadoghq.ad.logs: '[{"source": "python", "service": "scim-demo-backend", "log_processing_rules": [{"type": "multi_line", "name": "log_start_with_date", "pattern": "\\d{4}-\\d{2}-\\d{2}"}]}]'
 
   frontend:
     build:
@@ -52,6 +88,9 @@ services:
       - /app/node_modules
     depends_on:
       - backend
+      - datadog-agent
+    labels:
+      com.datadoghq.ad.logs: '[{"source": "nodejs", "service": "scim-demo-frontend"}]'
 
 volumes:
   postgres_data: 
