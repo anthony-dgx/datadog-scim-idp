@@ -36,72 +36,122 @@ A full-stack demo application for provisioning users and teams into Datadog via 
 
 - Docker and Docker Compose
 - Datadog account with API access
-- Datadog API key with `user_access_invite` and `user_access_manage` scopes
+- Datadog API key with required scopes (see below)
 
 ## ⚙️ Environment Configuration
 
 Create a `.env` file in the project root with the following variables:
 
 ```bash
-# Datadog SCIM API Configuration
+# Required: Datadog Agent Configuration
+DD_API_KEY=your_datadog_api_key_here
+DD_SITE=datadoghq.com
+DD_ENV=development
+
+# Required: Datadog SCIM API Configuration  
 DD_SCIM_BASE_URL=https://api.datadoghq.com/api/v2/scim
 DD_BEARER_TOKEN=your_datadog_api_key_here
 
-# Database Configuration (auto-configured for Docker Compose)
-DATABASE_URL=postgresql://scim_user:scim_password@localhost:5432/scim_demo
+# Auto-configured: Database (no changes needed for Docker)
+DATABASE_URL=postgresql://scim_user:scim_password@localhost:5433/scim_demo
 
-# Optional: Backend Configuration
+# Auto-configured: Agent connections (no changes needed for Docker)
+DD_AGENT_HOST=datadog-agent
+DD_DOGSTATSD_HOST=datadog-agent
+
+# Optional: Application Configuration
 BACKEND_HOST=0.0.0.0
 BACKEND_PORT=8000
-
-# Optional: Frontend Configuration  
 REACT_APP_API_BASE_URL=http://localhost:8000
 ```
 
+### 🔑 Required vs Optional Configuration
+
+**✅ Required (Application won't work without these):**
+- `DD_API_KEY` - For Datadog agent to send logs and metrics
+- `DD_BEARER_TOKEN` - For SCIM API operations (can use same key as DD_API_KEY)
+- `DD_SITE` - Your Datadog site region
+
+**⚙️ Auto-configured (Docker handles these):**
+- `DATABASE_URL` - Database connection 
+- `DD_AGENT_HOST` - Agent hostname for metrics
+- `DD_DOGSTATSD_HOST` - StatsD connection
+
+**🔧 Optional (Has sensible defaults):**
+- `DD_ENV` - Environment tag for logs (default: development)
+- `BACKEND_HOST/PORT` - Server configuration
+- `REACT_APP_API_BASE_URL` - Frontend API endpoint
+
 ### 🔑 Getting Your Datadog API Key
 
-1. Log into your Datadog account
-2. Go to **Organization Settings** → **API Keys**
-3. Click **New Key**
-4. Name it "SCIM Demo" and ensure it has these scopes:
-   - `user_access_invite`
-   - `user_access_manage`
-5. Copy the key and paste it as `DD_BEARER_TOKEN` in your `.env` file
+1. **Log into your Datadog account**
+2. **Go to Organization Settings → API Keys**
+3. **Click "New Key"**
+4. **Name it "SCIM Demo"** and ensure it has these scopes:
+   - `user_access_invite` (for SCIM user operations)
+   - `user_access_manage` (for SCIM user management)  
+   - `logs_write` (for agent log collection)
+   - `metrics_write` (for agent metrics collection)
+5. **Copy the key** and add it to your `.env` file as both:
+   - `DD_API_KEY=your_key_here` (for agent)
+   - `DD_BEARER_TOKEN=your_key_here` (for SCIM API)
 
-### 🌍 Datadog Sites
+### 🌍 Datadog Sites & Auto-Configuration
 
-Update `DD_SCIM_BASE_URL` based on your Datadog site:
+Set your `DD_SITE` and the application auto-configures everything:
 
-- **US**: `https://api.datadoghq.com/api/v2/scim`
-- **EU**: `https://api.datadoghq.eu/api/v2/scim`
-- **Other sites**: Check [Datadog documentation](https://docs.datadoghq.com/api/)
+| Site | DD_SITE Value | SCIM URL (auto-configured) |
+|------|---------------|----------------------------|
+| **US1** | `datadoghq.com` | `https://api.datadoghq.com/api/v2/scim` |
+| **US3** | `us3.datadoghq.com` | `https://api.us3.datadoghq.com/api/v2/scim` |
+| **US5** | `us5.datadoghq.com` | `https://api.us5.datadoghq.com/api/v2/scim` |
+| **EU** | `datadoghq.eu` | `https://api.datadoghq.eu/api/v2/scim` |
+| **AP1** | `ap1.datadoghq.com` | `https://api.ap1.datadoghq.com/api/v2/scim` |
+| **Gov** | `ddog-gov.com` | `https://api.ddog-gov.com/api/v2/scim` |
+
+💡 **Pro tip**: Just set `DD_SITE` - the application automatically configures the SCIM URL and agent endpoints!
 
 ## 🚀 Quick Start
 
-1. **Clone and setup environment**:
-   ```bash
-   git clone <repository-url>
-   cd scim-demo
-   cp .env.example .env
-   # Edit .env with your Datadog API key
-   ```
+### Step 1: Setup Environment
+```bash
+git clone https://github.com/anthony-dgx/datadog-scim-idp.git
+cd datadog-scim-idp
+cp env.example .env
+```
 
-2. **Start the application** (includes Datadog agent):
-   ```bash
-   docker-compose up --build
-   ```
+### Step 2: Configure Datadog Integration
+Edit your `.env` file with **required** values:
+```bash
+# Get these from Datadog → Organization Settings → API Keys
+DD_API_KEY=your_datadog_api_key_here
+DD_BEARER_TOKEN=your_datadog_api_key_here  # Can use same key
+DD_SITE=datadoghq.com  # Or your Datadog site (eu, us3, etc.)
+```
 
-3. **Access the application**:
-   - **Frontend**: http://localhost:3000
-   - **Backend API**: http://localhost:8000
-   - **API Documentation**: http://localhost:8000/docs
-   - **Datadog Agent**: Runs automatically in background for log collection
+### Step 3: Start the Full Stack
+```bash
+docker-compose up --build
+```
 
-**What's Running:**
-- 🐘 **PostgreSQL**: Database on port 5433
-- 🐍 **FastAPI Backend**: API server with comprehensive logging
-- ⚛️ **React Frontend**: Modern UI with Datadog styling
-- 🐕 **Datadog Agent**: Automatic log and metric collection
+### Step 4: Access the Application
+- 🖥️ **Frontend**: http://localhost:3000 
+- 🔗 **Backend API**: http://localhost:8000
+- 📚 **API Docs**: http://localhost:8000/docs
+- 📊 **View logs in Datadog**: Check your Datadog Log Explorer
+
+## 🏗️ Architecture Overview
+
+Your stack includes these containers:
+
+| Service | Port | Purpose | Logs Collected |
+|---------|------|---------|----------------|
+| 🐕 **Datadog Agent** | 8125, 8126 | **Log & metric collection** | All container logs → Datadog |
+| 🐘 **PostgreSQL** | 5433 | Database | Database queries & errors |
+| 🐍 **FastAPI Backend** | 8000 | **SCIM API with structured logging** | All user/group actions & SCIM payloads |
+| ⚛️ **React Frontend** | 3000 | Modern UI | Frontend access & errors |
+
+✨ **The agent automatically discovers and collects logs from all containers!**
 
 ## 📖 Demo Walkthrough
 
@@ -282,22 +332,29 @@ All logs are structured JSON with the following fields:
 
 ### 🔧 Datadog Agent Configuration
 
-The application includes a **Datadog agent container** that automatically collects logs from all services. Add these environment variables to your `.env` file:
+The application includes a **Datadog agent container** that automatically collects logs from all services and forwards them to Datadog. The agent is configured via environment variables:
 
+**✅ Required Configuration:**
 ```env
-# Required for SCIM operations
-DD_BEARER_TOKEN=your_datadog_api_key_here
-
-# Required for Datadog agent (logs and metrics)
-DD_API_KEY=your_datadog_api_key_here
-DD_SITE=datadoghq.com
-DD_SERVICE_NAME=scim-demo
-DD_ENV=development
-
-# Agent configuration (auto-configured in Docker)
-DD_AGENT_HOST=datadog-agent
-DD_DOGSTATSD_HOST=datadog-agent
+# Single API key for both agent and SCIM operations
+DD_API_KEY=your_datadog_api_key_here          # Agent log collection
+DD_BEARER_TOKEN=your_datadog_api_key_here     # SCIM API (can be same key)
+DD_SITE=datadoghq.com                         # Your Datadog region
 ```
+
+**⚙️ Auto-configured by Docker (no changes needed):**
+```env
+DD_SERVICE_NAME=scim-demo                     # Service name in logs
+DD_ENV=development                            # Environment tag
+DD_AGENT_HOST=datadog-agent                   # Agent hostname
+DD_DOGSTATSD_HOST=datadog-agent               # Metrics endpoint
+```
+
+**🔍 Agent Features:**
+- **Automatic log discovery** - Finds and collects logs from all containers
+- **Container metadata** - Adds container name, image, labels to logs
+- **Log processing** - Parses JSON logs and adds structured fields
+- **Buffering & retry** - Local buffering prevents log loss
 
 **Benefits of Agent-Based Logging:**
 - ✅ **Local buffering** - No log loss during network issues
@@ -381,19 +438,27 @@ The application sends metrics to Datadog:
 ### Common Issues
 
 1. **"DD_BEARER_TOKEN environment variable is required"**
-   - Ensure your `.env` file has the correct Datadog API key
-   - Verify the API key has the required scopes
+   - Ensure your `.env` file has both `DD_API_KEY` and `DD_BEARER_TOKEN` set
+   - Both can use the same Datadog API key value
+   - Verify the API key has the required scopes: `user_access_invite`, `user_access_manage`, `logs_write`, `metrics_write`
 
 2. **"Failed to sync user to Datadog"**
-   - Check your API key permissions
-   - Verify the Datadog SCIM base URL is correct
-   - Check network connectivity
+   - Check your API key permissions in Datadog
+   - Verify `DD_SITE` matches your Datadog region
+   - SCIM URL is auto-configured based on `DD_SITE`
+   - Check network connectivity and API rate limits
 
-3. **Database connection errors**
+3. **"Datadog agent connection issues"**
+   - Ensure `DD_API_KEY` is set for the agent
+   - Verify `DD_SITE` is correctly configured
+   - Check agent logs: `docker-compose logs datadog-agent`
+   - Agent automatically connects to other containers via Docker networking
+
+4. **Database connection errors**
    - Ensure PostgreSQL is running (automatic with Docker Compose)
    - Check DATABASE_URL format
 
-4. **Frontend not loading**
+5. **Frontend not loading**
    - Verify both backend and frontend containers are running
    - Check that ports 3000 and 8000 are available
 
