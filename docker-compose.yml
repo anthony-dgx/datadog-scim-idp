@@ -1,0 +1,57 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: scim_postgres
+    environment:
+      POSTGRES_DB: scim_demo
+      POSTGRES_USER: scim_user
+      POSTGRES_PASSWORD: scim_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scim_user -d scim_demo"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: scim_backend
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://scim_user:scim_password@db:5432/scim_demo
+      - DD_SCIM_BASE_URL=${DD_SCIM_BASE_URL}
+      - DD_BEARER_TOKEN=${DD_BEARER_TOKEN}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: scim_frontend
+    env_file:
+      - .env
+    ports:
+      - "3000:3000"
+    environment:
+      - REACT_APP_API_BASE_URL=http://localhost:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data: 
