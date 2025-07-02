@@ -122,16 +122,16 @@ cp env.example .env
 
 ### Step 2: Generate SAML Certificates (for SAML IdP functionality)
 ```bash
-# IMPORTANT: Run this in the project root directory
+# Generate self-signed certificate (for development only)
 openssl req -x509 -newkey rsa:2048 -keyout saml.key -out saml.crt -days 365 -nodes \
   -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost"
 
-# Verify files are created in the project root
-ls -la saml.*
-# You should see: saml.crt and saml.key
+# Convert to environment variable format (replace newlines with \n)
+echo "SAML_CERT=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' saml.crt)"
+echo "SAML_KEY=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' saml.key)"
 ```
 
-### Step 3: Configure Datadog Integration
+### Step 3: Configure Environment Variables
 Edit your `.env` file with **required** values:
 ```bash
 # Get these from Datadog → Organization Settings → API Keys
@@ -139,8 +139,10 @@ DD_API_KEY=your_datadog_api_key_here
 DD_BEARER_TOKEN=your_datadog_api_key_here  # Can use same key
 DD_SITE=datadoghq.com  # Or your Datadog site (eu, us3, etc.)
 
-# SAML IdP Configuration (add this line)
+# SAML IdP Configuration (copy the output from step 2)
 SAML_ISSUER=http://localhost:8000/saml/metadata
+SAML_CERT=-----BEGIN CERTIFICATE-----\nYOUR_CERTIFICATE_HERE\n-----END CERTIFICATE-----
+SAML_KEY=-----BEGIN PRIVATE KEY-----\nYOUR_PRIVATE_KEY_HERE\n-----END PRIVATE KEY-----
 ```
 
 ### Step 4: Start the Full Stack
@@ -230,38 +232,26 @@ The application also functions as a **SAML Identity Provider** for Datadog SSO a
 1. **Generate SAML Certificate & Key**:
    ```bash
    # Generate self-signed certificate (for development only)
-   # Run this command in your project root directory
    openssl req -x509 -newkey rsa:2048 -keyout saml.key -out saml.crt -days 365 -nodes \
      -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost"
    
-   # This creates two files in your project root:
-   # - saml.crt (certificate file)
-   # - saml.key (private key file)
-   # These files are automatically excluded from git via .gitignore
-   ```
-
-   **📁 File Placement**: The certificate and key files must be placed in your **project root directory** (same level as `docker-compose.yml`):
-   ```
-   your-project/
-   ├── saml.crt          ← Certificate file goes here
-   ├── saml.key          ← Private key file goes here
-   ├── docker-compose.yml
-   ├── README.md
-   ├── .env
-   └── ...
+   # Convert to environment variable format (replace newlines with \n)
+   echo "SAML_CERT=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' saml.crt)"
+   echo "SAML_KEY=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' saml.key)"
    ```
 
 2. **Configure SAML Environment Variables**:
    ```env
    # SAML Identity Provider Configuration (add to your .env file)
    SAML_ISSUER=http://localhost:8000/saml/metadata
+   SAML_CERT=-----BEGIN CERTIFICATE-----\nYOUR_CERTIFICATE_HERE\n-----END CERTIFICATE-----
+   SAML_KEY=-----BEGIN PRIVATE KEY-----\nYOUR_PRIVATE_KEY_HERE\n-----END PRIVATE KEY-----
    ```
 
-   **🔧 How the Application Reads the Files**:
-   - The backend container automatically mounts the project root directory
-   - The SAML client reads `saml.crt` and `saml.key` from the filesystem
-   - **No need to set certificate content in environment variables** - the application reads the files directly
-   - Files are accessible at `/app/saml.crt` and `/app/saml.key` inside the container
+   **📝 Environment Variable Format**: 
+   - Copy the certificate and key content from the commands above
+   - Replace actual newlines with `\n` in the environment variables
+   - Include the full `-----BEGIN/END-----` headers in the variables
 
 3. **Start the Application**:
    ```bash
@@ -273,7 +263,7 @@ The application also functions as a **SAML Identity Provider** for Datadog SSO a
    - Download the IdP metadata XML file
    - Follow the setup instructions in the SAML Config page
 
-⚠️ **Important**: The `saml.crt` and `saml.key` files contain sensitive cryptographic material and are excluded from git. **Never commit these files to version control**.
+⚠️ **Important**: The `SAML_CERT` and `SAML_KEY` contain sensitive cryptographic material. The `.env` file is excluded from git via `.gitignore`. **Never commit certificates to version control**.
 
 ### 📋 SAML Configuration Process
 
@@ -658,19 +648,12 @@ The application sends metrics to Datadog:
    - Verify both backend and frontend containers are running
    - Check that ports 3000 and 8000 are available
 
-7. **SAML certificate errors ("FileNotFoundError: saml.crt" or "saml.key")**
-   - **Check file placement**: Ensure `saml.crt` and `saml.key` are in the **project root directory**
-   - **Verify files exist**: Run `ls -la saml.*` in your project root
-   - **Check file permissions**: Ensure files are readable (`chmod 644 saml.crt saml.key`)
-   - **Docker mount issues**: Restart containers after adding certificates: `docker-compose down && docker-compose up --build`
-   - **Correct file structure**:
-     ```
-     your-project/
-     ├── saml.crt          ← Must be here
-     ├── saml.key          ← Must be here
-     ├── docker-compose.yml
-     └── ...
-     ```
+7. **SAML certificate errors ("SAML_CERT or SAML_KEY not configured" or empty certificate errors)**
+   - **Check environment variables**: Ensure `SAML_CERT` and `SAML_KEY` are set in your `.env` file
+   - **Verify format**: Certificate and key should include full headers (`-----BEGIN CERTIFICATE-----`, etc.)
+   - **Check newlines**: Replace actual newlines with `\n` in the environment variables
+   - **Generate certificates**: Run the certificate generation commands from Step 2
+   - **Restart containers**: After updating `.env`: `docker-compose down && docker-compose up --build`
 
 ### Logs and Debugging
 

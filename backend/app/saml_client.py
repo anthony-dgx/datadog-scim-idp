@@ -14,13 +14,13 @@ class SAMLConfig:
     
     def __init__(self):
         # Load environment variables
-        self.issuer = os.getenv("SAML_ISSUER", "https://my-idp.example.com/saml/metadata")
+        self.issuer = os.getenv("SAML_ISSUER", "http://localhost:8000/saml/metadata")
         self.cert = os.getenv("SAML_CERT", "").replace("\\n", "\n")
         self.key = os.getenv("SAML_KEY", "").replace("\\n", "\n")
         
         # Base settings for our IdP
         self.base_url = os.getenv("BACKEND_BASE_URL", "http://localhost:8000")
-        
+    
     def get_saml_settings(self, sp_metadata: Dict[str, Any] = None) -> Dict[str, Any]:
         """Generate SAML settings for OneLogin library"""
         
