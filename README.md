@@ -206,6 +206,135 @@ Your stack includes these containers:
 - **Error Handling**: View sync errors by hovering over failed status badges
 - **Conflict Resolution**: Comprehensive 409/400 error handling with validation and retry logic
 
+## 🔐 SAML Identity Provider Configuration
+
+The application also functions as a **SAML Identity Provider** for Datadog SSO authentication. This allows users to authenticate to Datadog using the same user database managed through the SCIM interface.
+
+### 🚀 SAML Setup Quick Start
+
+1. **Generate SAML Certificate & Key**:
+   ```bash
+   # Generate self-signed certificate (for development only)
+   openssl req -x509 -newkey rsa:2048 -keyout saml.key -out saml.crt -days 365 -nodes \
+     -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost"
+   
+   # Files will be created in your project root: saml.crt and saml.key
+   # These files are automatically excluded from git via .gitignore
+   ```
+
+2. **Configure SAML Environment Variables**:
+   ```env
+   # SAML Identity Provider Configuration (add to your .env file)
+   SAML_ISSUER=http://localhost:8000/saml/metadata
+   ```
+
+3. **Start the Application**:
+   ```bash
+   docker-compose up --build
+   ```
+
+4. **Configure SAML in the UI**:
+   - Navigate to `http://localhost:3000/saml` in the web interface
+   - Download the IdP metadata XML file
+   - Follow the setup instructions in the SAML Config page
+
+⚠️ **Important**: The `saml.crt` and `saml.key` files contain sensitive cryptographic material and are excluded from git. **Never commit these files to version control**.
+
+### 📋 SAML Configuration Process
+
+#### Step 1: Configure Datadog SAML Settings
+
+1. **Access Datadog SAML Configuration**:
+   - Go to Datadog → Organization Settings → Login Methods
+   - Click "Configure SAML"
+
+2. **Upload IdP Metadata**:
+   - Download IdP metadata from `http://localhost:8000/saml/metadata`
+   - Or use the metadata URL directly in Datadog: `http://localhost:8000/saml/metadata`
+   - Upload/configure the metadata in Datadog's SAML settings
+
+3. **Enable SAML Authentication**:
+   - Enable SAML authentication in Datadog
+   - Note the **Single Sign-On URL** provided by Datadog
+
+#### Step 2: Configure SP Metadata in Your IdP
+
+1. **Download Datadog SP Metadata**:
+   - In Datadog's SAML configuration page, download the SP metadata XML file
+
+2. **Upload SP Metadata**:
+   - Go to `http://localhost:3000/saml` in your SCIM demo application
+   - Upload the Datadog SP metadata XML file
+   - The system will automatically parse and configure the SAML endpoints
+
+#### Step 3: Test SAML Authentication
+
+1. **Initiate SAML Login**:
+   - Use the Single Sign-On URL from Datadog
+   - You'll be redirected to the IdP login page at `http://localhost:8000/saml/login`
+
+2. **Authenticate**:
+   - Enter the email address of a user that exists in your SCIM demo database
+   - The user must be active and synced to Datadog via SCIM
+
+3. **Automatic Redirect**:
+   - After successful authentication, you'll be automatically redirected back to Datadog
+   - You should be logged in as that user
+
+### 🔧 SAML Technical Details
+
+**Supported SAML Features:**
+- ✅ **HTTP-POST binding** for SAML2 (required by Datadog)
+- ✅ **Email-based NameID** (`urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress`)
+- ✅ **Signed assertions** with X.509 certificate
+- ✅ **SP-initiated SSO** flow
+- ✅ **Just-in-Time (JIT) provisioning** via existing SCIM integration
+
+**SAML Attributes Sent to Datadog:**
+- `eduPersonPrincipalName` (URN: `urn:oid:1.3.6.1.4.1.5923.1.1.1.6`) → Maps to Datadog username (email)
+- `givenName` (URN: `urn:oid:2.5.4.42`) → User's first name (optional)
+- `sn` (URN: `urn:oid:2.5.4.4`) → User's surname/last name (optional)
+
+**SAML Endpoints:**
+- `GET /saml/metadata` - IdP metadata XML (for configuring in Datadog)
+- `GET /saml/login` - SP-initiated login endpoint (called by Datadog)
+- `POST /saml/validate` - User authentication and SAML response generation
+- `GET /saml/logout` - SAML logout endpoint (optional)
+- `POST /api/saml/metadata` - Upload Datadog SP metadata XML
+- `GET /api/saml/metadata-list` - List configured SP metadata
+
+**Authentication Flow:**
+1. User clicks "Login with SAML" in Datadog
+2. Datadog redirects to IdP with SAMLRequest
+3. IdP displays email confirmation form
+4. User enters email and submits
+5. IdP validates user exists and is active
+6. IdP generates signed SAML assertion
+7. IdP auto-submits SAMLResponse back to Datadog
+8. Datadog validates assertion and logs user in
+
+**JIT Provisioning:**
+- If a user doesn't exist in Datadog, they're automatically created via SCIM
+- User attributes are populated from the local database
+- Default role assignment can be configured in Datadog
+
+### 🔐 Security Considerations
+
+**For Production Use:**
+- ✅ Use proper SSL/TLS certificates
+- ✅ Generate secure RSA keys (2048-bit minimum)
+- ✅ Store certificates securely (not in environment variables)
+- ✅ Implement proper session management
+- ✅ Add CSRF protection
+- ✅ Validate SAML requests thoroughly
+- ✅ Log all authentication attempts
+
+**Development Notes:**
+- The demo uses self-signed certificates for simplicity
+- All SAML operations are logged to Datadog for debugging
+- Users must exist in the local database to authenticate
+- SAML and SCIM work together for complete identity management
+
 ## 🛠️ Development
 
 ### Local Development (without Docker)
@@ -240,9 +369,11 @@ scim-demo/
 │   │   ├── schemas.py      # Pydantic models
 │   │   ├── database.py     # Database configuration
 │   │   ├── scim_client.py  # Datadog SCIM client
+│   │   ├── saml_client.py  # SAML Identity Provider
 │   │   └── routers/        # API route handlers
 │   │       ├── users.py    # User CRUD + sync
-│   │       └── groups.py   # Group CRUD + sync
+│   │       ├── groups.py   # Group CRUD + sync
+│   │       └── saml.py     # SAML IdP endpoints
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── frontend/               # React frontend
@@ -251,7 +382,8 @@ scim-demo/
 │   │   ├── App.css         # Datadog-inspired styles
 │   │   └── components/     # React components
 │   │       ├── UserList.jsx    # User management
-│   │       └── GroupList.jsx   # Group management
+│   │       ├── GroupList.jsx   # Group management
+│   │       └── SAMLConfig.jsx  # SAML configuration
 │   ├── public/
 │   ├── Dockerfile
 │   └── package.json
@@ -285,6 +417,15 @@ scim-demo/
 - `POST /api/groups/{group_id}/members/{user_id}/sync` - Sync specific member to Datadog group
 - `DELETE /api/groups/{group_id}/members/{user_id}/sync` - Remove specific member from Datadog group
 - `GET /api/groups/{group_id}/debug` - Debug endpoint showing local vs Datadog group state
+
+### SAML Identity Provider
+- `GET /saml/metadata` - IdP metadata XML (for configuring in Datadog)
+- `GET /saml/login` - SP-initiated login endpoint (called by Datadog)
+- `POST /saml/validate` - User authentication and SAML response generation
+- `GET /saml/logout` - SAML logout endpoint (optional)
+- `POST /api/saml/metadata` - Upload Datadog SP metadata XML
+- `GET /api/saml/metadata-list` - List configured SP metadata
+- `DELETE /api/saml/metadata/{id}` - Delete SP metadata record
 
 ### System
 - `GET /health` - Health check endpoint

@@ -3,6 +3,12 @@
 .env.local
 .env.production
 
+# SAML Certificates (sensitive data)
+saml.crt
+saml.key
+*.crt
+*.key
+
 # Python
 __pycache__/
 *.pyc

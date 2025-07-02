@@ -7,7 +7,7 @@ import logging
 
 from .database import engine, get_db
 from .models import Base
-from .routers import users, groups
+from .routers import users, groups, saml
 from .logging_config import setup_logging, action_logger
 
 # Initialize Datadog logging
@@ -59,6 +59,8 @@ app.add_middleware(
 # Include routers
 app.include_router(users.router, prefix="/api")
 app.include_router(groups.router, prefix="/api")
+app.include_router(saml.router)  # API endpoints for SAML management
+app.include_router(saml.public_router)  # Public SAML protocol endpoints
 
 @app.get("/", response_class=HTMLResponse)
 def read_root():

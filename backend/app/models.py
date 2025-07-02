@@ -97,4 +97,44 @@ class Group(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "members": [member.to_dict() for member in self.members]
+        }
+
+class SAMLMetadata(Base):
+    __tablename__ = "saml_metadata"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    entity_id = Column(String, unique=True, index=True, nullable=False)
+    metadata_xml = Column(Text, nullable=False)
+    
+    # Parsed metadata fields for easy access
+    acs_url = Column(String, nullable=True)  # Primary AssertionConsumerService URL
+    acs_binding = Column(String, nullable=True)  # ACS binding type
+    sls_url = Column(String, nullable=True)  # SingleLogoutService URL
+    sls_binding = Column(String, nullable=True)  # SLS binding type
+    
+    # Additional metadata
+    name_id_formats = Column(Text, nullable=True)  # JSON array of supported NameID formats
+    required_attributes = Column(Text, nullable=True)  # JSON array of required attributes
+    
+    # Status fields
+    active = Column(Boolean, default=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    def to_dict(self):
+        import json
+        return {
+            "id": self.id,
+            "entity_id": self.entity_id,
+            "acs_url": self.acs_url,
+            "acs_binding": self.acs_binding,
+            "sls_url": self.sls_url,
+            "sls_binding": self.sls_binding,
+            "name_id_formats": json.loads(self.name_id_formats) if self.name_id_formats else [],
+            "required_attributes": json.loads(self.required_attributes) if self.required_attributes else [],
+            "active": self.active,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None
         } 

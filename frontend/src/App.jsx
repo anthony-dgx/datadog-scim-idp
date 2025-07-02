@@ -4,6 +4,7 @@ import { Toaster } from 'react-hot-toast';
 import { Users, UserPlus, Shield, Settings, Activity, Database } from 'lucide-react';
 import UserList from './components/UserList';
 import GroupList from './components/GroupList';
+import SAMLConfig from './components/SAMLConfig';
 import './App.css';
 
 const Navigation = () => {
@@ -40,11 +41,18 @@ const Navigation = () => {
       </div>
       
       <div className="nav-section">
-        <div className="nav-section-title">System</div>
-        <div className="nav-item disabled">
+        <div className="nav-section-title">Configuration</div>
+        <Link 
+          to="/saml" 
+          className={`nav-item ${isActive('/saml') ? 'active' : ''}`}
+        >
           <Shield className="nav-icon" />
-          <span>Security</span>
-        </div>
+          <span>SAML Config</span>
+        </Link>
+      </div>
+      
+      <div className="nav-section">
+        <div className="nav-section-title">System</div>
         <div className="nav-item disabled">
           <Settings className="nav-icon" />
           <span>Settings</span>
@@ -89,6 +97,7 @@ function App() {
               <Route path="/" element={<UserList />} />
               <Route path="/users" element={<UserList />} />
               <Route path="/groups" element={<GroupList />} />
+              <Route path="/saml" element={<SAMLConfig />} />
             </Routes>
           </div>
         </div>

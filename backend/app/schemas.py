@@ -129,4 +129,39 @@ class BulkSyncResponse(BaseModel):
     total: int
     synced: int
     failed: int
-    errors: List[str] = [] 
+    errors: List[str] = []
+
+# SAML Schemas
+class SAMLMetadataCreate(BaseModel):
+    entity_id: str
+    metadata_xml: str
+
+class SAMLMetadataResponse(BaseModel):
+    id: int
+    entity_id: str
+    acs_url: Optional[str] = None
+    acs_binding: Optional[str] = None
+    sls_url: Optional[str] = None
+    sls_binding: Optional[str] = None
+    name_id_formats: List[str] = []
+    required_attributes: List[str] = []
+    active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class SAMLLoginRequest(BaseModel):
+    SAMLRequest: str
+    RelayState: Optional[str] = None
+
+class SAMLValidateRequest(BaseModel):
+    email: EmailStr
+    SAMLRequest: str
+    RelayState: Optional[str] = None
+
+class SAMLResponseData(BaseModel):
+    SAMLResponse: str
+    RelayState: Optional[str] = None
+    acs_url: str 
