@@ -198,8 +198,13 @@ Your stack includes these containers:
 
 - **Bulk Sync**: Use "Bulk Sync" to sync all pending users/groups
 - **Member Management**: Add/remove members using the quick action buttons
+- **Incremental Sync**: Groups use smart incremental member updates to prevent conflicts
+- **Individual Member Sync**: Sync/remove specific members without affecting the entire group
+- **Enhanced Member Removal**: Fixed SCIM PATCH format with automatic fallback strategies
+- **Debug Tools**: Use the debug endpoint to troubleshoot sync discrepancies
 - **Deactivation**: Use "Deactivate in Datadog" to disable users
 - **Error Handling**: View sync errors by hovering over failed status badges
+- **Conflict Resolution**: Comprehensive 409/400 error handling with validation and retry logic
 
 ## 🛠️ Development
 
@@ -272,10 +277,14 @@ scim-demo/
 - `GET /api/groups/{id}` - Get group by ID
 - `PUT /api/groups/{id}` - Update group
 - `DELETE /api/groups/{id}` - Delete group
-- `POST /api/groups/{id}/sync` - Sync group to Datadog
+- `POST /api/groups/{id}/sync` - Sync group to Datadog (incremental member updates)
+- `PATCH /api/groups/{id}/metadata` - Update only group metadata (name/description) in Datadog
 - `POST /api/groups/bulk-sync` - Bulk sync all pending groups
-- `POST /api/groups/{group_id}/members/{user_id}` - Add member to group
-- `DELETE /api/groups/{group_id}/members/{user_id}` - Remove member from group
+- `POST /api/groups/{group_id}/members/{user_id}` - Add member to group locally
+- `DELETE /api/groups/{group_id}/members/{user_id}` - Remove member from group locally
+- `POST /api/groups/{group_id}/members/{user_id}/sync` - Sync specific member to Datadog group
+- `DELETE /api/groups/{group_id}/members/{user_id}/sync` - Remove specific member from Datadog group
+- `GET /api/groups/{group_id}/debug` - Debug endpoint showing local vs Datadog group state
 
 ### System
 - `GET /health` - Health check endpoint
@@ -448,17 +457,28 @@ The application sends metrics to Datadog:
    - SCIM URL is auto-configured based on `DD_SITE`
    - Check network connectivity and API rate limits
 
-3. **"Datadog agent connection issues"**
+3. **"Issues with group member management (409 conflicts, member removal failures)"**
+   - **Fixed in v2.1**: 
+     - Groups use incremental PATCH operations with correct Datadog SCIM format
+     - Member removal now includes required `"value": null` for remove operations
+     - Automatic fallback to PUT operations if PATCH fails
+     - Enhanced validation and error handling
+   - **Debug tools**: Use `GET /api/groups/{id}/debug` to compare local vs Datadog state
+   - **Individual operations**: 
+     - `PATCH /api/groups/{id}/metadata` - Update only group name/description
+     - `POST/DELETE /api/groups/{group_id}/members/{user_id}/sync` - Individual member management
+
+4. **"Datadog agent connection issues"**
    - Ensure `DD_API_KEY` is set for the agent
    - Verify `DD_SITE` is correctly configured
    - Check agent logs: `docker-compose logs datadog-agent`
    - Agent automatically connects to other containers via Docker networking
 
-4. **Database connection errors**
+5. **Database connection errors**
    - Ensure PostgreSQL is running (automatic with Docker Compose)
    - Check DATABASE_URL format
 
-5. **Frontend not loading**
+6. **Frontend not loading**
    - Verify both backend and frontend containers are running
    - Check that ports 3000 and 8000 are available
 

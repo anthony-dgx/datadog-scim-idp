@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Dict, Any
 from datetime import datetime
 import logging
 
@@ -18,14 +18,18 @@ def group_to_scim(group: Group, base_url: str) -> SCIMGroup:
     """Convert a Group model to SCIM format"""
     members = []
     for member in group.members:
-        members.append(SCIMGroupMember(
-            **{
-                "$ref": f"{base_url}/Users/{member.datadog_user_id or member.uuid}",
-                "value": member.datadog_user_id or member.uuid,
-                "display": member.formatted_name or member.username,
-                "type": "User"
-            }
-        ))
+        # Only include members that have been successfully synced to Datadog
+        if member.datadog_user_id and member.sync_status == "synced":
+            members.append(SCIMGroupMember(
+                **{
+                    "$ref": f"{base_url}/Users/{member.datadog_user_id}",
+                    "value": member.datadog_user_id,
+                    "display": member.formatted_name or member.username,
+                    "type": "User"
+                }
+            ))
+        else:
+            logger.warning(f"Skipping member {member.username} - not synced to Datadog (status: {member.sync_status})")
     
     return SCIMGroup(
         displayName=group.display_name,
@@ -154,6 +158,146 @@ def remove_member_from_group(group_id: int, user_id: int, db: Session = Depends(
     
     return {"message": "User removed from group successfully"}
 
+@router.post("/{group_id}/members/{user_id}/sync", response_model=SyncResponse)
+async def sync_member_to_datadog_group(group_id: int, user_id: int, db: Session = Depends(get_db)):
+    """Sync a specific member to the Datadog group"""
+    db_group = db.query(Group).filter(Group.id == group_id).first()
+    if not db_group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    if not db_group.datadog_group_id:
+        raise HTTPException(status_code=400, detail="Group must be synced to Datadog first")
+    
+    db_user = db.query(User).filter(User.id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if db_user not in db_group.members:
+        raise HTTPException(status_code=400, detail="User is not a member of this group")
+    
+    try:
+        # Ensure user is synced to Datadog first
+        if not db_user.datadog_user_id:
+            scim_user = user_to_scim(db_user, scim_client.base_url)
+            scim_response = await scim_client.create_user(scim_user)
+            db_user.datadog_user_id = scim_response.id
+            db_user.last_synced = datetime.utcnow()
+            db_user.sync_status = "synced"
+            db_user.sync_error = None
+            db.commit()
+            
+            # Brief delay for Datadog processing
+            import asyncio
+            await asyncio.sleep(1)
+        
+        # Add user to Datadog group
+        await scim_client.add_user_to_group(
+            db_group.datadog_group_id,
+            db_user.datadog_user_id,
+            db_user.formatted_name or db_user.username
+        )
+        
+        action_logger.log_sync_operation(
+            operation_type="add_member",
+            entity_type="group",
+            entity_id=group_id,
+            datadog_id=db_group.datadog_group_id,
+            success=True,
+            sync_data={
+                "member_user_id": user_id,
+                "member_datadog_id": db_user.datadog_user_id,
+                "member_name": db_user.username
+            }
+        )
+        
+        return SyncResponse(
+            success=True,
+            message=f"User {db_user.username} added to group {db_group.display_name} in Datadog",
+            datadog_id=db_group.datadog_group_id
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to sync member {user_id} to group {group_id}: {e}")
+        
+        action_logger.log_sync_operation(
+            operation_type="add_member",
+            entity_type="group",
+            entity_id=group_id,
+            datadog_id=db_group.datadog_group_id,
+            success=False,
+            error=str(e)
+        )
+        
+        return SyncResponse(
+            success=False,
+            message="Failed to sync member to Datadog group",
+            error=str(e)
+        )
+
+@router.delete("/{group_id}/members/{user_id}/sync", response_model=SyncResponse)
+async def remove_member_from_datadog_group(group_id: int, user_id: int, db: Session = Depends(get_db)):
+    """Remove a specific member from the Datadog group"""
+    db_group = db.query(Group).filter(Group.id == group_id).first()
+    if not db_group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    if not db_group.datadog_group_id:
+        raise HTTPException(status_code=400, detail="Group is not synced to Datadog")
+    
+    db_user = db.query(User).filter(User.id == user_id).first()
+    if not db_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if not db_user.datadog_user_id:
+        return SyncResponse(
+            success=True,
+            message="User is not synced to Datadog, nothing to remove"
+        )
+    
+    try:
+        # Remove user from Datadog group
+        await scim_client.remove_user_from_group(
+            db_group.datadog_group_id,
+            db_user.datadog_user_id
+        )
+        
+        action_logger.log_sync_operation(
+            operation_type="remove_member",
+            entity_type="group",
+            entity_id=group_id,
+            datadog_id=db_group.datadog_group_id,
+            success=True,
+            sync_data={
+                "member_user_id": user_id,
+                "member_datadog_id": db_user.datadog_user_id,
+                "member_name": db_user.username
+            }
+        )
+        
+        return SyncResponse(
+            success=True,
+            message=f"User {db_user.username} removed from group {db_group.display_name} in Datadog",
+            datadog_id=db_group.datadog_group_id
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to remove member {user_id} from group {group_id}: {e}")
+        
+        action_logger.log_sync_operation(
+            operation_type="remove_member",
+            entity_type="group",
+            entity_id=group_id,
+            datadog_id=db_group.datadog_group_id,
+            success=False,
+            error=str(e)
+        )
+        
+        return SyncResponse(
+            success=False,
+            message="Failed to remove member from Datadog group",
+            error=str(e)
+        )
+
 @router.post("/{group_id}/sync", response_model=SyncResponse)
 async def sync_group_to_datadog(group_id: int, db: Session = Depends(get_db)):
     """Sync a group to Datadog via SCIM"""
@@ -223,16 +367,53 @@ async def sync_group_to_datadog(group_id: int, db: Session = Depends(get_db)):
         # Commit member updates
         db.commit()
         
+        # Add a brief delay to allow Datadog to process user creations
+        if member_sync_results:
+            import asyncio
+            await asyncio.sleep(2)  # 2 second delay for Datadog processing
+        
         # Now sync the group
-        scim_group = group_to_scim(db_group, scim_client.base_url)
         operation_type = "update" if db_group.datadog_group_id else "create"
         
         if db_group.datadog_group_id:
-            # Update existing group
-            scim_response = await scim_client.update_group(db_group.datadog_group_id, scim_group)
-            message = "Group updated in Datadog"
+            # Update existing group using member sync instead of full replacement
+            synced_member_ids = [
+                member.datadog_user_id 
+                for member in db_group.members 
+                if member.datadog_user_id and member.sync_status == "synced"
+            ]
+            
+            member_display_names = {
+                member.datadog_user_id: member.formatted_name or member.username
+                for member in db_group.members 
+                if member.datadog_user_id and member.sync_status == "synced"
+            }
+            
+            # Use incremental member sync instead of full group update
+            member_sync_result = await scim_client.sync_group_members(
+                db_group.datadog_group_id, 
+                synced_member_ids, 
+                member_display_names
+            )
+            
+            # Update group metadata (name, description) using PATCH to avoid member conflicts
+            scim_response = await scim_client.update_group_metadata(
+                db_group.datadog_group_id,
+                display_name=db_group.display_name,
+                external_id=db_group.external_id or db_group.uuid
+            )
+            message = f"Group updated in Datadog (added: {len(member_sync_result['added'])}, removed: {len(member_sync_result['removed'])})"
+            
+            # Store member sync results for logging
+            member_sync_results.extend([
+                {"action": "added", "user_id": uid} for uid in member_sync_result["added"]
+            ] + [
+                {"action": "removed", "user_id": uid} for uid in member_sync_result["removed"]
+            ])
+            
         else:
-            # Create new group
+            # Create new group with initial members
+            scim_group = group_to_scim(db_group, scim_client.base_url)
             scim_response = await scim_client.create_group(scim_group)
             db_group.datadog_group_id = scim_response.id
             message = "Group created in Datadog"
@@ -254,7 +435,10 @@ async def sync_group_to_datadog(group_id: int, db: Session = Depends(get_db)):
             sync_data={
                 "original_state": original_group_state,
                 "updated_state": db_group.to_dict(),
-                "scim_payload": scim_group.model_dump(),
+                "group_metadata": {
+                    "displayName": db_group.display_name,
+                    "externalId": db_group.external_id or db_group.uuid
+                },
                 "datadog_response": scim_response.model_dump() if hasattr(scim_response, 'model_dump') else str(scim_response),
                 "member_sync_results": member_sync_results,
                 "member_count": len(db_group.members)
@@ -285,7 +469,10 @@ async def sync_group_to_datadog(group_id: int, db: Session = Depends(get_db)):
             error=str(e),
             sync_data={
                 "original_state": original_group_state if 'original_group_state' in locals() else None,
-                "scim_payload": scim_group.model_dump() if 'scim_group' in locals() else None,
+                "group_metadata": {
+                    "displayName": db_group.display_name,
+                    "externalId": db_group.external_id or db_group.uuid
+                } if db_group else None,
                 "member_sync_results": member_sync_results if 'member_sync_results' in locals() else []
             }
         )
@@ -323,12 +510,36 @@ async def bulk_sync_groups(db: Session = Depends(get_db)):
                     member.sync_status = "synced"
                     member.sync_error = None
             
-            # Sync the group
-            scim_group = group_to_scim(group, scim_client.base_url)
-            
+            # Sync the group using the improved approach
             if group.datadog_group_id:
-                scim_response = await scim_client.update_group(group.datadog_group_id, scim_group)
+                # Use incremental member sync for existing groups
+                synced_member_ids = [
+                    member.datadog_user_id 
+                    for member in group.members 
+                    if member.datadog_user_id and member.sync_status == "synced"
+                ]
+                
+                member_display_names = {
+                    member.datadog_user_id: member.formatted_name or member.username
+                    for member in group.members 
+                    if member.datadog_user_id and member.sync_status == "synced"
+                }
+                
+                await scim_client.sync_group_members(
+                    group.datadog_group_id, 
+                    synced_member_ids, 
+                    member_display_names
+                )
+                
+                # Update group metadata using PATCH to avoid member conflicts
+                scim_response = await scim_client.update_group_metadata(
+                    group.datadog_group_id,
+                    display_name=group.display_name,
+                    external_id=group.external_id or group.uuid
+                )
             else:
+                # Create new group with initial members
+                scim_group = group_to_scim(group, scim_client.base_url)
                 scim_response = await scim_client.create_group(scim_group)
                 group.datadog_group_id = scim_response.id
             
@@ -349,4 +560,179 @@ async def bulk_sync_groups(db: Session = Depends(get_db)):
         success=failed_count == 0,
         message=f"Synced {synced_count} groups, {failed_count} failed",
         error="; ".join(errors) if errors else None
-    ) 
+    )
+
+@router.patch("/{group_id}/metadata", response_model=SyncResponse)
+async def update_group_metadata_only(group_id: int, db: Session = Depends(get_db)):
+    """Test endpoint: Update only group metadata in Datadog without affecting members"""
+    db_group = db.query(Group).filter(Group.id == group_id).first()
+    if not db_group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    if not db_group.datadog_group_id:
+        raise HTTPException(status_code=400, detail="Group must be synced to Datadog first")
+    
+    try:
+        # Update only metadata using PATCH operations
+        scim_response = await scim_client.update_group_metadata(
+            db_group.datadog_group_id,
+            display_name=db_group.display_name,
+            external_id=db_group.external_id or db_group.uuid
+        )
+        
+        action_logger.log_sync_operation(
+            operation_type="update_metadata",
+            entity_type="group",
+            entity_id=group_id,
+            datadog_id=db_group.datadog_group_id,
+            success=True,
+            sync_data={
+                "updated_metadata": {
+                    "displayName": db_group.display_name,
+                    "externalId": db_group.external_id or db_group.uuid
+                }
+            }
+        )
+        
+        return SyncResponse(
+            success=True,
+            message=f"Group metadata updated in Datadog: {db_group.display_name}",
+            datadog_id=db_group.datadog_group_id
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to update group metadata {group_id}: {e}")
+        
+        action_logger.log_sync_operation(
+            operation_type="update_metadata",
+            entity_type="group",
+            entity_id=group_id,
+            datadog_id=db_group.datadog_group_id,
+            success=False,
+            error=str(e)
+        )
+        
+        return SyncResponse(
+            success=False,
+            message="Failed to update group metadata in Datadog",
+            error=str(e)
+        )
+
+@router.get("/{group_id}/debug", response_model=Dict[str, Any])
+async def debug_group_state(group_id: int, db: Session = Depends(get_db)):
+    """Debug endpoint: Get detailed group state from both local DB and Datadog"""
+    db_group = db.query(Group).filter(Group.id == group_id).first()
+    if not db_group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    result = {
+        "local_group": db_group.to_dict(),
+        "datadog_group": None,
+        "member_comparison": None
+    }
+    
+    if db_group.datadog_group_id:
+        try:
+            # Get current state from Datadog
+            datadog_group = await scim_client.get_group(db_group.datadog_group_id)
+            result["datadog_group"] = {
+                "id": datadog_group.id,
+                "displayName": datadog_group.displayName,
+                "externalId": datadog_group.externalId,
+                "members": [
+                    {
+                        "value": getattr(member, 'value', None),
+                        "display": getattr(member, 'display', None),
+                        "$ref": getattr(member, 'ref', None)
+                    } for member in datadog_group.members
+                ]
+            }
+            
+            # Compare local vs Datadog members
+            local_members = [
+                {
+                    "user_id": member.id,
+                    "username": member.username,
+                    "datadog_user_id": member.datadog_user_id,
+                    "sync_status": member.sync_status
+                } for member in db_group.members
+            ]
+            
+            datadog_member_ids = [getattr(member, 'value', None) for member in datadog_group.members]
+            local_datadog_ids = [member.datadog_user_id for member in db_group.members if member.datadog_user_id]
+            
+            result["member_comparison"] = {
+                "local_members": local_members,
+                "datadog_member_ids": datadog_member_ids,
+                "local_synced_ids": local_datadog_ids,
+                "members_in_datadog_not_local": [mid for mid in datadog_member_ids if mid not in local_datadog_ids],
+                "members_in_local_not_datadog": [mid for mid in local_datadog_ids if mid not in datadog_member_ids]
+            }
+            
+        except Exception as e:
+            result["datadog_error"] = str(e)
+    
+    return result
+
+@router.delete("/{group_id}/cleanup/{datadog_user_id}", response_model=SyncResponse)
+async def cleanup_remove_user_from_datadog_group(group_id: int, datadog_user_id: str, db: Session = Depends(get_db)):
+    """Cleanup endpoint: Remove a user from Datadog group by their Datadog user ID (for orphaned users)"""
+    db_group = db.query(Group).filter(Group.id == group_id).first()
+    if not db_group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    if not db_group.datadog_group_id:
+        raise HTTPException(status_code=400, detail="Group must be synced to Datadog first")
+    
+    try:
+        success = await scim_client.remove_user_from_group_by_datadog_id(
+            db_group.datadog_group_id, 
+            datadog_user_id
+        )
+        
+        if success:
+            action_logger.log_sync_operation(
+                operation_type="cleanup_remove_member",
+                entity_type="group",
+                entity_id=group_id,
+                datadog_id=db_group.datadog_group_id,
+                success=True,
+                sync_data={
+                    "removed_datadog_user_id": datadog_user_id,
+                    "context": "cleanup_orphaned_user"
+                }
+            )
+            
+            return SyncResponse(
+                success=True,
+                message=f"Successfully removed user {datadog_user_id} from Datadog group",
+                datadog_id=db_group.datadog_group_id
+            )
+        else:
+            return SyncResponse(
+                success=False,
+                message=f"Failed to remove user {datadog_user_id} from Datadog group",
+                datadog_id=db_group.datadog_group_id
+            )
+            
+    except Exception as e:
+        logger.error(f"Failed to cleanup remove user {datadog_user_id} from group {group_id}: {e}")
+        
+        action_logger.log_sync_operation(
+            operation_type="cleanup_remove_member",
+            entity_type="group",
+            entity_id=group_id,
+            datadog_id=db_group.datadog_group_id,
+            success=False,
+            error=str(e),
+            sync_data={
+                "datadog_user_id": datadog_user_id,
+                "context": "cleanup_orphaned_user"
+            }
+        )
+        
+        return SyncResponse(
+            success=False,
+            message="Failed to remove user from Datadog group",
+            error=str(e)
+        ) 
