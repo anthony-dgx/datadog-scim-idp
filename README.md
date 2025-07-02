@@ -120,24 +120,39 @@ cd datadog-scim-idp
 cp env.example .env
 ```
 
-### Step 2: Configure Datadog Integration
+### Step 2: Generate SAML Certificates (for SAML IdP functionality)
+```bash
+# IMPORTANT: Run this in the project root directory
+openssl req -x509 -newkey rsa:2048 -keyout saml.key -out saml.crt -days 365 -nodes \
+  -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost"
+
+# Verify files are created in the project root
+ls -la saml.*
+# You should see: saml.crt and saml.key
+```
+
+### Step 3: Configure Datadog Integration
 Edit your `.env` file with **required** values:
 ```bash
 # Get these from Datadog → Organization Settings → API Keys
 DD_API_KEY=your_datadog_api_key_here
 DD_BEARER_TOKEN=your_datadog_api_key_here  # Can use same key
 DD_SITE=datadoghq.com  # Or your Datadog site (eu, us3, etc.)
+
+# SAML IdP Configuration (add this line)
+SAML_ISSUER=http://localhost:8000/saml/metadata
 ```
 
-### Step 3: Start the Full Stack
+### Step 4: Start the Full Stack
 ```bash
 docker-compose up --build
 ```
 
-### Step 4: Access the Application
+### Step 5: Access the Application
 - 🖥️ **Frontend**: http://localhost:3000 
 - 🔗 **Backend API**: http://localhost:8000
 - 📚 **API Docs**: http://localhost:8000/docs
+- 🔐 **SAML Config**: http://localhost:3000/saml (for SAML IdP setup)
 - 📊 **View logs in Datadog**: Check your Datadog Log Explorer
 
 ## 🏗️ Architecture Overview
@@ -215,11 +230,25 @@ The application also functions as a **SAML Identity Provider** for Datadog SSO a
 1. **Generate SAML Certificate & Key**:
    ```bash
    # Generate self-signed certificate (for development only)
+   # Run this command in your project root directory
    openssl req -x509 -newkey rsa:2048 -keyout saml.key -out saml.crt -days 365 -nodes \
      -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost"
    
-   # Files will be created in your project root: saml.crt and saml.key
+   # This creates two files in your project root:
+   # - saml.crt (certificate file)
+   # - saml.key (private key file)
    # These files are automatically excluded from git via .gitignore
+   ```
+
+   **📁 File Placement**: The certificate and key files must be placed in your **project root directory** (same level as `docker-compose.yml`):
+   ```
+   your-project/
+   ├── saml.crt          ← Certificate file goes here
+   ├── saml.key          ← Private key file goes here
+   ├── docker-compose.yml
+   ├── README.md
+   ├── .env
+   └── ...
    ```
 
 2. **Configure SAML Environment Variables**:
@@ -227,6 +256,12 @@ The application also functions as a **SAML Identity Provider** for Datadog SSO a
    # SAML Identity Provider Configuration (add to your .env file)
    SAML_ISSUER=http://localhost:8000/saml/metadata
    ```
+
+   **🔧 How the Application Reads the Files**:
+   - The backend container automatically mounts the project root directory
+   - The SAML client reads `saml.crt` and `saml.key` from the filesystem
+   - **No need to set certificate content in environment variables** - the application reads the files directly
+   - Files are accessible at `/app/saml.crt` and `/app/saml.key` inside the container
 
 3. **Start the Application**:
    ```bash
@@ -622,6 +657,20 @@ The application sends metrics to Datadog:
 6. **Frontend not loading**
    - Verify both backend and frontend containers are running
    - Check that ports 3000 and 8000 are available
+
+7. **SAML certificate errors ("FileNotFoundError: saml.crt" or "saml.key")**
+   - **Check file placement**: Ensure `saml.crt` and `saml.key` are in the **project root directory**
+   - **Verify files exist**: Run `ls -la saml.*` in your project root
+   - **Check file permissions**: Ensure files are readable (`chmod 644 saml.crt saml.key`)
+   - **Docker mount issues**: Restart containers after adding certificates: `docker-compose down && docker-compose up --build`
+   - **Correct file structure**:
+     ```
+     your-project/
+     ├── saml.crt          ← Must be here
+     ├── saml.key          ← Must be here
+     ├── docker-compose.yml
+     └── ...
+     ```
 
 ### Logs and Debugging
 
