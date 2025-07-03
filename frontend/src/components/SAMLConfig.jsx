@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { Download, Upload, Eye, EyeOff, Trash2, CheckCircle, XCircle, AlertCircle, FileText, Server } from 'lucide-react';
 import './SAMLConfig.css';
 
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8000';
+
 const SAMLConfig = () => {
   const [metadata, setMetadata] = useState([]);
   const [uploading, setUploading] = useState(false);
@@ -15,7 +17,7 @@ const SAMLConfig = () => {
 
   const fetchMetadata = async () => {
     try {
-      const response = await fetch('/api/saml/metadata-list');
+      const response = await fetch(`${API_BASE_URL}/api/saml/metadata-list`);
       if (response.ok) {
         const data = await response.json();
         setMetadata(data);
@@ -43,7 +45,7 @@ const SAMLConfig = () => {
     formData.append('file', selectedFile);
 
     try {
-      const response = await fetch('/api/saml/upload-metadata', {
+      const response = await fetch(`${API_BASE_URL}/api/saml/metadata`, {
         method: 'POST',
         body: formData,
       });
@@ -68,11 +70,11 @@ const SAMLConfig = () => {
     }
   };
 
-  const handleDelete = async (filename) => {
-    if (!window.confirm(`Are you sure you want to delete ${filename}?`)) return;
+  const handleDelete = async (metadataId) => {
+    if (!window.confirm(`Are you sure you want to delete this metadata record?`)) return;
 
     try {
-      const response = await fetch(`/api/saml/metadata/${filename}`, {
+      const response = await fetch(`${API_BASE_URL}/api/saml/metadata/${metadataId}`, {
         method: 'DELETE',
       });
 
@@ -86,18 +88,23 @@ const SAMLConfig = () => {
     }
   };
 
-  const handleDownload = async (filename) => {
+  const handleDownload = async (metadataRecord) => {
     try {
-      const response = await fetch(`/api/saml/metadata/${filename}`);
-      if (response.ok) {
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        a.click();
-        window.URL.revokeObjectURL(url);
-      }
+      // For now, we'll create a downloadable XML file from the metadata
+      const xmlContent = metadataRecord.metadata_xml || `<?xml version="1.0"?>
+<EntityDescriptor entityID="${metadataRecord.entity_id}">
+  <SPSSODescriptor>
+    <AssertionConsumerService Location="${metadataRecord.acs_url}" Binding="${metadataRecord.acs_binding}" />
+  </SPSSODescriptor>
+</EntityDescriptor>`;
+      
+      const blob = new Blob([xmlContent], { type: 'application/xml' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${metadataRecord.entity_id.replace(/[^a-zA-Z0-9]/g, '_')}-metadata.xml`;
+      a.click();
+      window.URL.revokeObjectURL(url);
     } catch (error) {
       console.error('Download error:', error);
     }
@@ -105,7 +112,7 @@ const SAMLConfig = () => {
 
   const downloadIdPMetadata = async () => {
     try {
-      const response = await fetch('/api/saml/metadata');
+      const response = await fetch(`${API_BASE_URL}/saml/metadata`);
       if (response.ok) {
         const blob = await response.blob();
         const url = window.URL.createObjectURL(blob);
@@ -211,15 +218,15 @@ const SAMLConfig = () => {
             <div className="info-grid">
               <div className="info-item">
                 <label>SSO URL</label>
-                <div className="value">{window.location.origin}/saml/sso</div>
+                <div className="value">http://localhost:8000/saml/login</div>
               </div>
               <div className="info-item">
                 <label>Entity ID</label>
-                <div className="value">{window.location.origin}/saml/metadata</div>
+                <div className="value">http://localhost:8000/saml/metadata</div>
               </div>
               <div className="info-item">
                 <label>Metadata URL</label>
-                <div className="value">{window.location.origin}/api/saml/metadata</div>
+                <div className="value">http://localhost:8000/saml/metadata</div>
               </div>
             </div>
           </div>
@@ -255,13 +262,13 @@ const SAMLConfig = () => {
               <code>
 {`<?xml version="1.0" encoding="UTF-8"?>
 <md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" 
-                     entityID="${window.location.origin}/saml/metadata">
+                     entityID="http://localhost:8000/saml/metadata">
   <md:IDPSSODescriptor WantAuthnRequestsSigned="true" 
                        protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
     <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" 
-                           Location="${window.location.origin}/saml/sso"/>
+                           Location="http://localhost:8000/saml/login"/>
     <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" 
-                           Location="${window.location.origin}/saml/sso"/>
+                           Location="http://localhost:8000/saml/login"/>
   </md:IDPSSODescriptor>
 </md:EntityDescriptor>`}
               </code>
@@ -282,26 +289,26 @@ const SAMLConfig = () => {
           </p>
           
           <div className="metadata-list">
-            {metadata.map((file, index) => (
+            {metadata.map((record, index) => (
               <div key={index} className="metadata-item">
                 <div className="metadata-info">
-                  <h3>{file.filename}</h3>
+                  <h3>{record.entity_id}</h3>
                   <p>
-                    Entity ID: {file.entity_id || 'Not specified'} • 
-                    Uploaded: {new Date(file.upload_time).toLocaleDateString()}
+                    ACS URL: {record.acs_url || 'Not specified'} • 
+                    Uploaded: {new Date(record.created_at).toLocaleDateString()}
                   </p>
                 </div>
                 <div className="metadata-actions">
                   <button
                     className="btn btn-secondary"
-                    onClick={() => handleDownload(file.filename)}
+                    onClick={() => handleDownload(record)}
                   >
                     <Download size={14} />
                     Download
                   </button>
                   <button
                     className="btn btn-danger"
-                    onClick={() => handleDelete(file.filename)}
+                    onClick={() => handleDelete(record.id)}
                   >
                     <Trash2 size={14} />
                     Delete
