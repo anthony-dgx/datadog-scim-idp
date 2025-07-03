@@ -218,6 +218,13 @@ const GroupList = () => {
             Failed
           </span>
         );
+      case 'warning':
+        return (
+          <span className="status-badge warning" title={group.sync_error}>
+            <AlertCircle {...iconProps} />
+            Warning
+          </span>
+        );
       case 'pending':
       default:
         return (
@@ -249,7 +256,7 @@ const GroupList = () => {
         <div>
           <h2 className="card-title">Groups</h2>
           <p style={{ color: '#8b949e', marginTop: '4px' }}>
-            Manage groups and team memberships with Datadog sync
+            Manage groups and team memberships - automatically syncs with Datadog on updates
           </p>
         </div>
         <div style={{ display: 'flex', gap: '12px' }}>
@@ -257,13 +264,14 @@ const GroupList = () => {
             onClick={handleBulkSync}
             className="btn btn-secondary"
             disabled={syncing.bulk}
+            title="Force sync all pending groups to Datadog"
           >
             {syncing.bulk ? (
               <div className="spinner" style={{ width: '16px', height: '16px', margin: 0 }}></div>
             ) : (
               <RefreshCw size={16} />
             )}
-            Bulk Sync
+            Force Sync All
           </button>
           <button 
             onClick={() => setShowModal(true)}
@@ -280,7 +288,7 @@ const GroupList = () => {
           <UserPlus className="empty-state-icon" />
           <h3 className="empty-state-title">No Groups Found</h3>
           <p className="empty-state-description">
-            Get started by creating your first group.
+            Get started by creating your first group. Groups automatically sync to Datadog when updated.
           </p>
           <button 
             onClick={() => setShowModal(true)}
@@ -313,6 +321,11 @@ const GroupList = () => {
                         'Never synced'
                       )}
                     </span>
+                    {group.datadog_group_id && (
+                      <span style={{ fontSize: '11px', color: '#7c3aed', padding: '2px 6px', background: 'rgba(124, 58, 237, 0.1)', borderRadius: '4px' }}>
+                        Auto-sync enabled
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div style={{ display: 'flex', gap: '8px' }}>
@@ -320,19 +333,19 @@ const GroupList = () => {
                     onClick={() => handleSync(group.id)}
                     className="btn btn-success btn-sm"
                     disabled={syncing[group.id]}
-                    title="Sync to Datadog"
+                    title="Force sync to Datadog (updates happen automatically)"
                   >
                     {syncing[group.id] ? (
                       <div className="spinner" style={{ width: '12px', height: '12px', margin: 0 }}></div>
-                                         ) : (
-                       <RotateCcw size={14} />
-                     )}
+                    ) : (
+                      <RotateCcw size={14} />
+                    )}
                   </button>
                   
                   <button
                     onClick={() => handleEdit(group)}
                     className="btn btn-secondary btn-sm"
-                    title="Edit group"
+                    title="Edit group (will auto-sync to Datadog)"
                   >
                     <Edit2 size={14} />
                   </button>
@@ -396,9 +409,9 @@ const GroupList = () => {
                           <button
                             onClick={() => handleRemoveMember(group.id, member.id)}
                             className="btn btn-danger btn-sm"
-                            title="Remove from group"
+                            title="Remove from group (will auto-sync to Datadog)"
                           >
-                            <UserMinus size={12} />
+                            <X size={14} />
                           </button>
                         </div>
                       ))}
@@ -406,32 +419,64 @@ const GroupList = () => {
                   )}
                 </div>
 
-                {getAvailableUsers(group).length > 0 && (
-                  <div>
-                    <h4 style={{ fontSize: '14px', fontWeight: '600', color: '#f0f6fc', marginBottom: '8px' }}>
-                      Add Members
-                    </h4>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
-                      {getAvailableUsers(group).slice(0, 5).map(user => (
-                        <button
-                          key={user.id}
-                          onClick={() => handleAddMember(group.id, user.id)}
-                          className="btn btn-secondary btn-sm"
-                          style={{ fontSize: '12px' }}
-                          title={`Add ${user.formatted_name || user.username} to group`}
-                        >
-                          <UserPlus size={12} />
-                          {user.formatted_name || user.username}
-                        </button>
+                <div>
+                  <h4 style={{ fontSize: '14px', fontWeight: '600', color: '#f0f6fc', marginBottom: '8px' }}>
+                    Add Members
+                  </h4>
+                  
+                  {getAvailableUsers(group).length === 0 ? (
+                    <p style={{ color: '#8b949e', fontSize: '14px', fontStyle: 'italic' }}>
+                      All users are already members of this group
+                    </p>
+                  ) : (
+                    <div style={{ display: 'grid', gap: '8px' }}>
+                      {getAvailableUsers(group).map(user => (
+                        <div key={user.id} style={{ 
+                          display: 'flex', 
+                          justifyContent: 'space-between', 
+                          alignItems: 'center',
+                          padding: '8px 12px',
+                          background: 'rgba(177, 186, 196, 0.03)',
+                          borderRadius: '6px',
+                          border: '1px solid #30363d'
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <div style={{ 
+                              width: '32px', 
+                              height: '32px', 
+                              borderRadius: '50%', 
+                              background: 'linear-gradient(135deg, #0d1117 0%, #21262d 100%)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              color: '#8b949e',
+                              fontSize: '12px',
+                              fontWeight: '600',
+                              border: '1px solid #30363d'
+                            }}>
+                              {(user.formatted_name || user.username).charAt(0).toUpperCase()}
+                            </div>
+                            <div>
+                              <div style={{ fontWeight: '500', color: '#f0f6fc', fontSize: '14px' }}>
+                                {user.formatted_name || user.username}
+                              </div>
+                              <div style={{ color: '#8b949e', fontSize: '12px' }}>
+                                {user.email}
+                              </div>
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => handleAddMember(group.id, user.id)}
+                            className="btn btn-primary btn-sm"
+                            title="Add to group (will auto-sync to Datadog)"
+                          >
+                            <Plus size={14} />
+                          </button>
+                        </div>
                       ))}
-                      {getAvailableUsers(group).length > 5 && (
-                        <span style={{ color: '#8b949e', fontSize: '12px', alignSelf: 'center' }}>
-                          +{getAvailableUsers(group).length - 5} more
-                        </span>
-                      )}
                     </div>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             </div>
           ))}
@@ -453,7 +498,7 @@ const GroupList = () => {
 
             <form onSubmit={handleSubmit}>
               <div className="form-group">
-                <label className="form-label">Group Name *</label>
+                <label className="form-label">Display Name *</label>
                 <input
                   type="text"
                   name="display_name"
@@ -470,8 +515,8 @@ const GroupList = () => {
                   name="description"
                   value={formData.description}
                   onChange={handleInputChange}
-                  className="form-input form-textarea"
-                  placeholder="Optional group description"
+                  className="form-input"
+                  rows="3"
                 />
               </div>
 
@@ -479,47 +524,31 @@ const GroupList = () => {
                 <label className="form-label">Members</label>
                 <div style={{ 
                   maxHeight: '200px', 
-                  overflowY: 'auto', 
-                  border: '1px solid #30363d', 
-                  borderRadius: '8px',
+                  overflowY: 'auto',
+                  border: '1px solid #30363d',
+                  borderRadius: '6px',
                   padding: '8px'
                 }}>
-                  {users.length === 0 ? (
-                    <p style={{ color: '#8b949e', fontSize: '14px', textAlign: 'center', padding: '20px' }}>
-                      No users available
-                    </p>
-                  ) : (
-                    users.map(user => (
-                      <label 
-                        key={user.id}
-                        style={{ 
-                          display: 'flex', 
-                          alignItems: 'center', 
-                          gap: '8px', 
-                          padding: '8px',
-                          cursor: 'pointer',
-                          borderRadius: '4px'
-                        }}
-                        onMouseEnter={e => e.target.style.background = 'rgba(177, 186, 196, 0.05)'}
-                        onMouseLeave={e => e.target.style.background = 'transparent'}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={formData.member_ids.includes(user.id)}
-                          onChange={() => handleMemberSelect(user.id)}
-                          style={{ margin: 0 }}
-                        />
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontWeight: '500', color: '#f0f6fc', fontSize: '14px' }}>
-                            {user.formatted_name || user.username}
-                          </div>
-                          <div style={{ color: '#8b949e', fontSize: '12px' }}>
-                            {user.email}
-                          </div>
-                        </div>
-                      </label>
-                    ))
-                  )}
+                  {users.map(user => (
+                    <label key={user.id} className="form-label" style={{ 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: '8px',
+                      padding: '4px 8px',
+                      margin: 0,
+                      cursor: 'pointer'
+                    }}>
+                      <input
+                        type="checkbox"
+                        checked={formData.member_ids.includes(user.id)}
+                        onChange={() => handleMemberSelect(user.id)}
+                        className="form-checkbox"
+                      />
+                      <span style={{ color: '#f0f6fc' }}>
+                        {user.formatted_name || user.username} ({user.email})
+                      </span>
+                    </label>
+                  ))}
                 </div>
               </div>
 
@@ -531,6 +560,17 @@ const GroupList = () => {
                   {editingGroup ? 'Update Group' : 'Create Group'}
                 </button>
               </div>
+              
+              {editingGroup && (
+                <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(124, 58, 237, 0.1)', borderRadius: '6px', border: '1px solid rgba(124, 58, 237, 0.3)' }}>
+                  <div style={{ fontSize: '13px', color: '#a855f7', fontWeight: '500' }}>
+                    ✨ Auto-sync enabled
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#8b949e', marginTop: '4px' }}>
+                    Changes will automatically sync to Datadog when you save
+                  </div>
+                </div>
+              )}
             </form>
           </div>
         </div>

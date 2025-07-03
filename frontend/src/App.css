@@ -417,6 +417,12 @@ body {
   border: 1px solid rgba(255, 107, 107, 0.3);
 }
 
+.status-badge.warning {
+  background: rgba(251, 191, 36, 0.1);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.3);
+}
+
 /* Modal */
 .modal-overlay {
   position: fixed;

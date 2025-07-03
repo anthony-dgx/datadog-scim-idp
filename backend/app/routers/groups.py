@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List, Dict, Any
 from datetime import datetime
 import logging
+import asyncio
 
 from ..database import get_db
 from ..models import Group, User
@@ -80,12 +81,127 @@ def create_group(group: GroupCreate, db: Session = Depends(get_db)):
     
     return GroupResponse.model_validate(db_group.to_dict())
 
+async def auto_sync_group_to_datadog(db_group: Group, db: Session) -> tuple[bool, str]:
+    """Automatically sync a group to Datadog if it has a datadog_group_id"""
+    if not db_group.datadog_group_id:
+        return False, "Group not previously synced to Datadog"
+    
+    try:
+        # Ensure all members are synced first
+        member_sync_results = []
+        for member in db_group.members:
+            if not member.datadog_user_id:
+                try:
+                    scim_user = user_to_scim(member, scim_client.base_url)
+                    scim_response = await scim_client.create_user(scim_user)
+                    member.datadog_user_id = scim_response.id
+                    member.last_synced = datetime.utcnow()
+                    member.sync_status = "synced"
+                    member.sync_error = None
+                    member_sync_results.append({"user_id": member.id, "success": True})
+                except Exception as e:
+                    logger.error(f"Failed to auto-sync member {member.username} to Datadog: {e}")
+                    member.sync_status = "failed"
+                    member.sync_error = str(e)
+                    member_sync_results.append({"user_id": member.id, "success": False, "error": str(e)})
+        
+        # Commit member updates
+        db.commit()
+        
+        # Brief delay for Datadog processing
+        if member_sync_results:
+            await asyncio.sleep(1)
+        
+        # Update group metadata and sync members
+        synced_member_ids = [
+            member.datadog_user_id 
+            for member in db_group.members 
+            if member.datadog_user_id and member.sync_status == "synced"
+        ]
+        
+        member_display_names = {
+            member.datadog_user_id: member.formatted_name or member.username
+            for member in db_group.members 
+            if member.datadog_user_id and member.sync_status == "synced"
+        }
+        
+        # Use incremental member sync
+        member_sync_result = await scim_client.sync_group_members(
+            db_group.datadog_group_id, 
+            synced_member_ids, 
+            member_display_names
+        )
+        
+        # Update group metadata
+        scim_response = await scim_client.update_group_metadata(
+            db_group.datadog_group_id,
+            display_name=db_group.display_name,
+            external_id=db_group.external_id or db_group.uuid
+        )
+        
+        # Update sync status
+        db_group.last_synced = datetime.utcnow()
+        db_group.sync_status = "synced"
+        db_group.sync_error = None
+        db.commit()
+        
+        # Log successful auto-sync
+        action_logger.log_sync_operation(
+            operation_type="auto_update",
+            entity_type="group",
+            entity_id=db_group.id,
+            datadog_id=db_group.datadog_group_id,
+            success=True,
+            sync_data={
+                "group_metadata": {
+                    "displayName": db_group.display_name,
+                    "externalId": db_group.external_id or db_group.uuid
+                },
+                "member_sync_results": member_sync_results,
+                "member_changes": member_sync_result,
+                "context": "automatic_sync_on_update"
+            }
+        )
+        
+        message = f"Group automatically synced to Datadog (added: {len(member_sync_result['added'])}, removed: {len(member_sync_result['removed'])})"
+        return True, message
+        
+    except Exception as e:
+        logger.error(f"Failed to auto-sync group {db_group.id} to Datadog: {e}")
+        
+        # Update sync status with error but don't fail the update
+        db_group.sync_status = "failed"
+        db_group.sync_error = str(e)
+        db.commit()
+        
+        # Log failed auto-sync
+        action_logger.log_sync_operation(
+            operation_type="auto_update",
+            entity_type="group",
+            entity_id=db_group.id,
+            datadog_id=db_group.datadog_group_id,
+            success=False,
+            error=str(e),
+            sync_data={
+                "group_metadata": {
+                    "displayName": db_group.display_name,
+                    "externalId": db_group.external_id or db_group.uuid
+                },
+                "context": "automatic_sync_on_update"
+            }
+        )
+        
+        return False, f"Auto-sync failed: {str(e)}"
+
 @router.put("/{group_id}", response_model=GroupResponse)
-def update_group(group_id: int, group: GroupUpdate, db: Session = Depends(get_db)):
-    """Update an existing group"""
+async def update_group(group_id: int, group: GroupUpdate, db: Session = Depends(get_db)):
+    """Update an existing group and automatically sync to Datadog if applicable"""
     db_group = db.query(Group).filter(Group.id == group_id).first()
     if not db_group:
         raise HTTPException(status_code=404, detail="Group not found")
+    
+    # Store original data for logging
+    original_data = db_group.to_dict()
     
     # Update fields if provided
     update_data = group.model_dump(exclude_unset=True)
@@ -106,6 +222,11 @@ def update_group(group_id: int, group: GroupUpdate, db: Session = Depends(get_db
     db.commit()
     db.refresh(db_group)
     
+    # Automatically sync to Datadog if group was previously synced
+    sync_success, sync_message = await auto_sync_group_to_datadog(db_group, db)
+    
+    logger.info(f"Group {group_id} updated successfully. Auto-sync result: {sync_message}")
+    
     return GroupResponse.model_validate(db_group.to_dict())
 
 @router.delete("/{group_id}")
@@ -121,8 +242,8 @@ def delete_group(group_id: int, db: Session = Depends(get_db)):
     return {"message": "Group deleted successfully"}
 
 @router.post("/{group_id}/members/{user_id}")
-def add_member_to_group(group_id: int, user_id: int, db: Session = Depends(get_db)):
-    """Add a user to a group"""
+async def add_member_to_group(group_id: int, user_id: int, db: Session = Depends(get_db)):
+    """Add a user to a group and automatically sync to Datadog if applicable"""
     db_group = db.query(Group).filter(Group.id == group_id).first()
     if not db_group:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -137,11 +258,20 @@ def add_member_to_group(group_id: int, user_id: int, db: Session = Depends(get_d
     db_group.members.append(db_user)
     db.commit()
     
-    return {"message": "User added to group successfully"}
+    # Automatically sync to Datadog if group was previously synced
+    sync_success, sync_message = await auto_sync_group_to_datadog(db_group, db)
+    
+    return {
+        "message": "User added to group successfully",
+        "auto_sync_result": {
+            "success": sync_success,
+            "message": sync_message
+        }
+    }
 
 @router.delete("/{group_id}/members/{user_id}")
-def remove_member_from_group(group_id: int, user_id: int, db: Session = Depends(get_db)):
-    """Remove a user from a group"""
+async def remove_member_from_group(group_id: int, user_id: int, db: Session = Depends(get_db)):
+    """Remove a user from a group and automatically sync to Datadog if applicable"""
     db_group = db.query(Group).filter(Group.id == group_id).first()
     if not db_group:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -156,7 +286,16 @@ def remove_member_from_group(group_id: int, user_id: int, db: Session = Depends(
     db_group.members.remove(db_user)
     db.commit()
     
-    return {"message": "User removed from group successfully"}
+    # Automatically sync to Datadog if group was previously synced
+    sync_success, sync_message = await auto_sync_group_to_datadog(db_group, db)
+    
+    return {
+        "message": "User removed from group successfully",
+        "auto_sync_result": {
+            "success": sync_success,
+            "message": sync_message
+        }
+    }
 
 @router.post("/{group_id}/members/{user_id}/sync", response_model=SyncResponse)
 async def sync_member_to_datadog_group(group_id: int, user_id: int, db: Session = Depends(get_db)):

@@ -211,6 +211,13 @@ const UserList = () => {
             Failed
           </span>
         );
+      case 'warning':
+        return (
+          <span className="status-badge warning" title={user.sync_error}>
+            <AlertCircle {...iconProps} />
+            Warning
+          </span>
+        );
       case 'pending':
       default:
         return (
@@ -237,7 +244,7 @@ const UserList = () => {
         <div>
           <h2 className="card-title">Users</h2>
           <p style={{ color: '#8b949e', marginTop: '4px' }}>
-            Manage user accounts and sync with Datadog
+            Manage user accounts - automatically syncs with Datadog on updates
           </p>
         </div>
         <div style={{ display: 'flex', gap: '12px' }}>
@@ -245,13 +252,14 @@ const UserList = () => {
             onClick={handleBulkSync}
             className="btn btn-secondary"
             disabled={syncing.bulk}
+            title="Force sync all pending users to Datadog"
           >
             {syncing.bulk ? (
               <div className="spinner" style={{ width: '16px', height: '16px', margin: 0 }}></div>
             ) : (
               <RefreshCw size={16} />
             )}
-            Bulk Sync
+            Force Sync All
           </button>
           <button 
             onClick={() => setShowModal(true)}
@@ -268,7 +276,7 @@ const UserList = () => {
           <Users className="empty-state-icon" />
           <h3 className="empty-state-title">No Users Found</h3>
           <p className="empty-state-description">
-            Get started by creating your first user account.
+            Get started by creating your first user account. Users will automatically sync to Datadog when updated.
           </p>
           <button 
             onClick={() => setShowModal(true)}
@@ -314,13 +322,20 @@ const UserList = () => {
                   </td>
                   <td>{getSyncStatusBadge(user)}</td>
                   <td>
-                    {user.last_synced ? (
-                      <span style={{ fontSize: '13px', color: '#8b949e' }}>
-                        {formatDistanceToNow(new Date(user.last_synced), { addSuffix: true })}
-                      </span>
-                    ) : (
-                      <span style={{ fontSize: '13px', color: '#8b949e' }}>Never</span>
-                    )}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                      {user.last_synced ? (
+                        <span style={{ fontSize: '13px', color: '#8b949e' }}>
+                          {formatDistanceToNow(new Date(user.last_synced), { addSuffix: true })}
+                        </span>
+                      ) : (
+                        <span style={{ fontSize: '13px', color: '#8b949e' }}>Never</span>
+                      )}
+                      {user.datadog_user_id && (
+                        <span style={{ fontSize: '11px', color: '#7c3aed' }}>
+                          Auto-sync enabled
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td>
                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
@@ -328,7 +343,7 @@ const UserList = () => {
                         onClick={() => handleSync(user.id)}
                         className="btn btn-success btn-sm"
                         disabled={syncing[user.id]}
-                        title="Sync to Datadog"
+                        title="Force sync to Datadog (updates happen automatically)"
                       >
                         {syncing[user.id] ? (
                           <div className="spinner" style={{ width: '12px', height: '12px', margin: 0 }}></div>
@@ -340,7 +355,7 @@ const UserList = () => {
                       <button
                         onClick={() => handleEdit(user)}
                         className="btn btn-secondary btn-sm"
-                        title="Edit user"
+                        title="Edit user (will auto-sync to Datadog)"
                       >
                         <Edit2 size={14} />
                       </button>
@@ -410,28 +425,26 @@ const UserList = () => {
                 />
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-                <div className="form-group">
-                  <label className="form-label">First Name</label>
-                  <input
-                    type="text"
-                    name="first_name"
-                    value={formData.first_name}
-                    onChange={handleInputChange}
-                    className="form-input"
-                  />
-                </div>
+              <div className="form-group">
+                <label className="form-label">First Name</label>
+                <input
+                  type="text"
+                  name="first_name"
+                  value={formData.first_name}
+                  onChange={handleInputChange}
+                  className="form-input"
+                />
+              </div>
 
-                <div className="form-group">
-                  <label className="form-label">Last Name</label>
-                  <input
-                    type="text"
-                    name="last_name"
-                    value={formData.last_name}
-                    onChange={handleInputChange}
-                    className="form-input"
-                  />
-                </div>
+              <div className="form-group">
+                <label className="form-label">Last Name</label>
+                <input
+                  type="text"
+                  name="last_name"
+                  value={formData.last_name}
+                  onChange={handleInputChange}
+                  className="form-input"
+                />
               </div>
 
               <div className="form-group">
@@ -446,15 +459,15 @@ const UserList = () => {
               </div>
 
               <div className="form-group">
-                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <label className="form-label">
                   <input
                     type="checkbox"
                     name="active"
                     checked={formData.active}
                     onChange={handleInputChange}
-                    style={{ margin: 0 }}
+                    className="form-checkbox"
                   />
-                  <span className="form-label" style={{ margin: 0 }}>Active</span>
+                  Active
                 </label>
               </div>
 
@@ -466,6 +479,17 @@ const UserList = () => {
                   {editingUser ? 'Update User' : 'Create User'}
                 </button>
               </div>
+              
+              {editingUser && (
+                <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(124, 58, 237, 0.1)', borderRadius: '6px', border: '1px solid rgba(124, 58, 237, 0.3)' }}>
+                  <div style={{ fontSize: '13px', color: '#a855f7', fontWeight: '500' }}>
+                    ✨ Auto-sync enabled
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#8b949e', marginTop: '4px' }}>
+                    Changes will automatically sync to Datadog when you save
+                  </div>
+                </div>
+              )}
             </form>
           </div>
         </div>

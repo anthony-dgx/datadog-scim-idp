@@ -5,6 +5,7 @@ from datetime import datetime
 import logging
 from .schemas import SCIMUser, SCIMGroup, SCIMPatchRequest, SCIMUserResponse, SCIMGroupResponse
 from .logging_config import action_logger, TimingContext
+import urllib.parse
 
 logger = logging.getLogger(__name__)
 
@@ -98,8 +99,27 @@ class DatadogSCIMClient:
     # User operations
     async def create_user(self, user_data: SCIMUser) -> SCIMUserResponse:
         """Create a user in Datadog via SCIM"""
-        response_data = await self._make_request("POST", "/Users", user_data.model_dump())
-        return SCIMUserResponse(**response_data)
+        try:
+            response_data = await self._make_request("POST", "/Users", user_data.model_dump())
+            return SCIMUserResponse(**response_data)
+        except Exception as e:
+            # Handle 409 conflict - user already exists
+            if "409" in str(e) and "user already exists" in str(e).lower():
+                logger.info(f"User {user_data.userName} already exists in Datadog, attempting to find existing user")
+                try:
+                    # Search for the existing user by email
+                    existing_user = await self.find_user_by_email(user_data.userName)
+                    if existing_user:
+                        logger.info(f"Found existing user in Datadog with ID: {existing_user.id}")
+                        return existing_user
+                    else:
+                        logger.warning(f"User exists according to API but could not be found in search")
+                        raise ValueError(f"User {user_data.userName} already exists in Datadog but could not be retrieved. Please check Datadog manually and update the user's Datadog ID in the database.")
+                except Exception as search_error:
+                    logger.error(f"Failed to search for existing user: {search_error}")
+                    raise ValueError(f"User {user_data.userName} already exists in Datadog but could not be retrieved: {str(search_error)}")
+            else:
+                raise e
     
     async def get_user(self, user_id: str) -> SCIMUserResponse:
         """Get a user from Datadog via SCIM"""
@@ -138,9 +158,64 @@ class DatadogSCIMClient:
         """List users from Datadog via SCIM"""
         params = f"?startIndex={start_index}&count={count}"
         if filter_expr:
-            params += f"&filter={filter_expr}"
+            # URL encode the filter expression
+            encoded_filter = urllib.parse.quote(filter_expr)
+            params += f"&filter={encoded_filter}"
         
         return await self._make_request("GET", f"/Users{params}")
+    
+    async def find_user_by_email(self, email: str) -> Optional[SCIMUserResponse]:
+        """Find a user by email address using SCIM filtering"""
+        try:
+            # Try multiple filter formats since different SCIM implementations may vary
+            filter_expressions = [
+                f'emails.value eq "{email}"',
+                f'emails eq "{email}"',
+                f'userName eq "{email}"'
+            ]
+            
+            for filter_expr in filter_expressions:
+                try:
+                    logger.info(f"Searching for user with filter: {filter_expr}")
+                    users_data = await self.list_users(filter_expr=filter_expr)
+                    
+                    if users_data.get("Resources") and len(users_data["Resources"]) > 0:
+                        # Return the first matching user
+                        user_data = users_data["Resources"][0]
+                        logger.info(f"Found user via filter '{filter_expr}': {user_data.get('id', 'unknown')}")
+                        return SCIMUserResponse(**user_data)
+                    
+                except Exception as filter_error:
+                    logger.warning(f"Filter '{filter_expr}' failed: {filter_error}")
+                    continue
+            
+            # If filters don't work, try searching through all users (less efficient but more reliable)
+            logger.info("Filter search failed, trying manual search through all users")
+            try:
+                all_users = await self.list_users(count=100)  # Get first 100 users
+                
+                if all_users.get("Resources"):
+                    for user_data in all_users["Resources"]:
+                        # Check if any email matches
+                        user_emails = []
+                        if user_data.get("emails"):
+                            user_emails.extend([email_obj.get("value") for email_obj in user_data["emails"]])
+                        if user_data.get("userName"):
+                            user_emails.append(user_data["userName"])
+                        
+                        if email.lower() in [e.lower() for e in user_emails if e]:
+                            logger.info(f"Found user via manual search: {user_data.get('id', 'unknown')}")
+                            return SCIMUserResponse(**user_data)
+                            
+            except Exception as manual_search_error:
+                logger.error(f"Manual search failed: {manual_search_error}")
+            
+            logger.info(f"No user found with email: {email}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error searching for user by email {email}: {e}")
+            return None
 
     # Group operations
     async def create_group(self, group_data: SCIMGroup) -> SCIMGroupResponse:
