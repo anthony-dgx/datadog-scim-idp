@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Download, Upload, Eye, EyeOff, Trash2, CheckCircle, XCircle, AlertCircle, FileText, Server } from 'lucide-react';
 import './SAMLConfig.css';
 
 const SAMLConfig = () => {
@@ -20,282 +21,297 @@ const SAMLConfig = () => {
         setMetadata(data);
       }
     } catch (error) {
-      console.error('Failed to fetch metadata:', error);
+      console.error('Error fetching metadata:', error);
     }
   };
 
   const handleFileSelect = (event) => {
     const file = event.target.files[0];
-    setSelectedFile(file);
-    setUploadStatus('');
+    if (file) {
+      setSelectedFile(file);
+      setUploadStatus('');
+    }
   };
 
   const handleUpload = async () => {
-    if (!selectedFile) {
-      setUploadStatus('Please select a file first');
-      return;
-    }
-
-    if (!selectedFile.name.endsWith('.xml')) {
-      setUploadStatus('Please select an XML file');
-      return;
-    }
+    if (!selectedFile) return;
 
     setUploading(true);
     setUploadStatus('');
 
-    try {
-      const formData = new FormData();
-      formData.append('file', selectedFile);
+    const formData = new FormData();
+    formData.append('file', selectedFile);
 
-      const response = await fetch('/api/saml/metadata', {
+    try {
+      const response = await fetch('/api/saml/upload-metadata', {
         method: 'POST',
-        body: formData
+        body: formData,
       });
 
       if (response.ok) {
-        const result = await response.json();
-        setUploadStatus(`✅ Successfully uploaded metadata for ${result.entity_id}`);
+        setUploadStatus('success');
         setSelectedFile(null);
+        fetchMetadata();
         // Reset file input
         const fileInput = document.getElementById('metadata-file');
         if (fileInput) fileInput.value = '';
-        // Refresh metadata list
-        fetchMetadata();
       } else {
         const error = await response.json();
-        setUploadStatus(`❌ Upload failed: ${error.detail}`);
+        setUploadStatus('error');
+        console.error('Upload failed:', error);
       }
     } catch (error) {
-      setUploadStatus(`❌ Upload failed: ${error.message}`);
+      setUploadStatus('error');
+      console.error('Upload error:', error);
     } finally {
       setUploading(false);
     }
   };
 
-  const handleDownloadIdPMetadata = async () => {
+  const handleDelete = async (filename) => {
+    if (!window.confirm(`Are you sure you want to delete ${filename}?`)) return;
+
     try {
-      const response = await fetch('/saml/metadata');
+      const response = await fetch(`/api/saml/metadata/${filename}`, {
+        method: 'DELETE',
+      });
+
+      if (response.ok) {
+        fetchMetadata();
+      } else {
+        console.error('Delete failed');
+      }
+    } catch (error) {
+      console.error('Delete error:', error);
+    }
+  };
+
+  const handleDownload = async (filename) => {
+    try {
+      const response = await fetch(`/api/saml/metadata/${filename}`);
       if (response.ok) {
         const blob = await response.blob();
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.style.display = 'none';
         a.href = url;
-        a.download = 'idp-metadata.xml';
-        document.body.appendChild(a);
+        a.download = filename;
         a.click();
         window.URL.revokeObjectURL(url);
-      } else {
-        alert('Failed to download IdP metadata');
       }
     } catch (error) {
-      alert(`Failed to download IdP metadata: ${error.message}`);
+      console.error('Download error:', error);
     }
   };
 
-  const handleDeleteMetadata = async (metadataId, entityId) => {
-    // eslint-disable-next-line no-restricted-globals
-    if (!confirm(`Are you sure you want to delete metadata for ${entityId}?`)) {
-      return;
-    }
-
+  const downloadIdPMetadata = async () => {
     try {
-      const response = await fetch(`/api/saml/metadata/${metadataId}`, {
-        method: 'DELETE'
-      });
-
+      const response = await fetch('/api/saml/metadata');
       if (response.ok) {
-        setUploadStatus(`✅ Deleted metadata for ${entityId}`);
-        fetchMetadata();
-      } else {
-        const error = await response.json();
-        setUploadStatus(`❌ Delete failed: ${error.detail}`);
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'idp-metadata.xml';
+        a.click();
+        window.URL.revokeObjectURL(url);
       }
     } catch (error) {
-      setUploadStatus(`❌ Delete failed: ${error.message}`);
+      console.error('Download error:', error);
     }
   };
 
-  const toggleIdPMetadata = () => {
-    setShowIdPMetadata(!showIdPMetadata);
+  const getStatusIcon = (status) => {
+    switch (status) {
+      case 'success':
+        return <CheckCircle size={16} />;
+      case 'error':
+        return <XCircle size={16} />;
+      default:
+        return <AlertCircle size={16} />;
+    }
   };
 
   return (
     <div className="saml-config">
-      <div className="header">
-        <h2>🔐 SAML Identity Provider Configuration</h2>
-        <p>Configure SAML SSO for Datadog authentication</p>
+      <div className="page-header">
+        <h1>SAML Configuration</h1>
+        <p>Manage SAML metadata and configure single sign-on</p>
       </div>
 
-      {/* IdP Metadata Section */}
-      <div className="card">
-        <h3>📄 Identity Provider Metadata</h3>
-        <p>Download this metadata XML file to configure SAML in Datadog</p>
-        
-        <div className="metadata-actions">
-          <button 
-            onClick={handleDownloadIdPMetadata}
-            className="btn btn-primary"
-          >
-            📥 Download IdP Metadata XML
-          </button>
+      <div className="config-grid">
+        {/* Upload Section */}
+        <div className="config-section">
+          <h2>
+            <Upload size={20} />
+            Upload SP Metadata
+          </h2>
+          <p className="section-description">
+            Upload Service Provider metadata XML files to configure SAML authentication
+          </p>
           
-          <button 
-            onClick={toggleIdPMetadata}
-            className="btn btn-secondary"
-          >
-            {showIdPMetadata ? 'Hide' : 'Show'} Metadata URL
-          </button>
-        </div>
-
-        {showIdPMetadata && (
-          <div className="metadata-info">
-            <p><strong>Metadata URL:</strong></p>
-            <code>{window.location.origin}/saml/metadata</code>
-            <p className="info-text">
-              Use this URL in Datadog's SAML configuration or download the XML file above.
+          <div className="upload-section">
+            <div className="upload-text">
+              <FileText size={24} />
+              <strong>Choose metadata file</strong>
+            </div>
+            <p className="upload-subtext">
+              Select an XML file containing Service Provider metadata
             </p>
-          </div>
-        )}
-      </div>
-
-      {/* SP Metadata Upload Section */}
-      <div className="card">
-        <h3>📤 Upload Datadog Service Provider Metadata</h3>
-        <p>Upload the SP metadata XML file downloaded from Datadog's SAML configuration page</p>
-        
-        <div className="upload-section">
-          <div className="file-input-group">
             <input
               type="file"
               id="metadata-file"
-              accept=".xml"
+              accept=".xml,application/xml,text/xml"
               onChange={handleFileSelect}
-              className="file-input"
+              style={{ display: 'none' }}
             />
-            <label htmlFor="metadata-file" className="file-label">
-              {selectedFile ? selectedFile.name : 'Choose XML file...'}
+            <label htmlFor="metadata-file" className="btn btn-secondary">
+              <Upload size={16} />
+              Select File
             </label>
           </div>
-          
+
+          {selectedFile && (
+            <div className="status-message info">
+              <FileText size={16} />
+              Selected: {selectedFile.name}
+            </div>
+          )}
+
+          {uploadStatus && (
+            <div className={`status-message ${uploadStatus}`}>
+              {getStatusIcon(uploadStatus)}
+              {uploadStatus === 'success' ? 'Metadata uploaded successfully!' : 'Upload failed. Please try again.'}
+            </div>
+          )}
+
           <button
+            className="btn btn-primary"
             onClick={handleUpload}
             disabled={!selectedFile || uploading}
-            className="btn btn-primary"
           >
-            {uploading ? '⏳ Uploading...' : '📤 Upload Metadata'}
+            {uploading ? 'Uploading...' : 'Upload Metadata'}
           </button>
         </div>
 
-        {uploadStatus && (
-          <div className={`status-message ${uploadStatus.includes('❌') ? 'error' : 'success'}`}>
-            {uploadStatus}
+        {/* Download Section */}
+        <div className="config-section">
+          <h2>
+            <Server size={20} />
+            Identity Provider
+          </h2>
+          <p className="section-description">
+            Download the Identity Provider metadata to configure your Service Provider
+          </p>
+          
+          <div className="provider-info">
+            <h3>
+              <Download size={16} />
+              IdP Metadata
+            </h3>
+            <div className="info-grid">
+              <div className="info-item">
+                <label>SSO URL</label>
+                <div className="value">{window.location.origin}/saml/sso</div>
+              </div>
+              <div className="info-item">
+                <label>Entity ID</label>
+                <div className="value">{window.location.origin}/saml/metadata</div>
+              </div>
+              <div className="info-item">
+                <label>Metadata URL</label>
+                <div className="value">{window.location.origin}/api/saml/metadata</div>
+              </div>
+            </div>
           </div>
-        )}
+
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+            <button className="btn btn-primary" onClick={downloadIdPMetadata}>
+              <Download size={16} />
+              Download Metadata
+            </button>
+            <button 
+              className="btn btn-secondary"
+              onClick={() => setShowIdPMetadata(!showIdPMetadata)}
+            >
+              {showIdPMetadata ? <EyeOff size={16} /> : <Eye size={16} />}
+              {showIdPMetadata ? 'Hide' : 'View'} Metadata
+            </button>
+          </div>
+        </div>
       </div>
 
-      {/* Current SP Metadata Section */}
-      <div className="card">
-        <h3>📋 Configured Service Provider Metadata</h3>
-        
-        {metadata.length === 0 ? (
-          <div className="no-metadata">
-            <p>No Service Provider metadata configured yet.</p>
-            <p>Upload Datadog's SP metadata XML file above to configure SAML SSO.</p>
+      {/* Metadata Preview */}
+      {showIdPMetadata && (
+        <div className="config-section">
+          <button 
+            className="metadata-toggle"
+            onClick={() => setShowIdPMetadata(!showIdPMetadata)}
+          >
+            <span>Identity Provider Metadata</span>
+            {showIdPMetadata ? <EyeOff size={16} /> : <Eye size={16} />}
+          </button>
+          <div className="metadata-content">
+            <pre>
+              <code>
+{`<?xml version="1.0" encoding="UTF-8"?>
+<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" 
+                     entityID="${window.location.origin}/saml/metadata">
+  <md:IDPSSODescriptor WantAuthnRequestsSigned="true" 
+                       protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" 
+                           Location="${window.location.origin}/saml/sso"/>
+    <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" 
+                           Location="${window.location.origin}/saml/sso"/>
+  </md:IDPSSODescriptor>
+</md:EntityDescriptor>`}
+              </code>
+            </pre>
           </div>
-        ) : (
+        </div>
+      )}
+
+      {/* Uploaded Metadata List */}
+      {metadata.length > 0 && (
+        <div className="config-section">
+          <h2>
+            <FileText size={20} />
+            Uploaded Metadata Files
+          </h2>
+          <p className="section-description">
+            Manage your uploaded Service Provider metadata files
+          </p>
+          
           <div className="metadata-list">
-            {metadata.map((item) => (
-              <div key={item.id} className="metadata-item">
-                <div className="metadata-header">
-                  <h4>{item.entity_id}</h4>
-                  <span className={`status ${item.active ? 'active' : 'inactive'}`}>
-                    {item.active ? '✅ Active' : '❌ Inactive'}
-                  </span>
+            {metadata.map((file, index) => (
+              <div key={index} className="metadata-item">
+                <div className="metadata-info">
+                  <h3>{file.filename}</h3>
+                  <p>
+                    Entity ID: {file.entity_id || 'Not specified'} • 
+                    Uploaded: {new Date(file.upload_time).toLocaleDateString()}
+                  </p>
                 </div>
-                
-                <div className="metadata-details">
-                  <div className="detail-row">
-                    <span className="label">Assertion Consumer Service:</span>
-                    <span className="value">{item.acs_url}</span>
-                  </div>
-                  
-                  <div className="detail-row">
-                    <span className="label">ACS Binding:</span>
-                    <span className="value">{item.acs_binding}</span>
-                  </div>
-
-                  {item.sls_url && (
-                    <div className="detail-row">
-                      <span className="label">Single Logout Service:</span>
-                      <span className="value">{item.sls_url}</span>
-                    </div>
-                  )}
-
-                  <div className="detail-row">
-                    <span className="label">NameID Formats:</span>
-                    <span className="value">
-                      {item.name_id_formats.length > 0 
-                        ? item.name_id_formats.join(', ') 
-                        : 'Not specified'}
-                    </span>
-                  </div>
-
-                  <div className="detail-row">
-                    <span className="label">Updated:</span>
-                    <span className="value">
-                      {new Date(item.updated_at).toLocaleDateString()}
-                    </span>
-                  </div>
-                </div>
-
                 <div className="metadata-actions">
                   <button
-                    onClick={() => handleDeleteMetadata(item.id, item.entity_id)}
-                    className="btn btn-danger btn-small"
+                    className="btn btn-secondary"
+                    onClick={() => handleDownload(file.filename)}
                   >
-                    🗑️ Delete
+                    <Download size={14} />
+                    Download
+                  </button>
+                  <button
+                    className="btn btn-danger"
+                    onClick={() => handleDelete(file.filename)}
+                  >
+                    <Trash2 size={14} />
+                    Delete
                   </button>
                 </div>
               </div>
             ))}
           </div>
-        )}
-      </div>
-
-      {/* SAML Setup Instructions */}
-      <div className="card instructions">
-        <h3>📖 Setup Instructions</h3>
-        <ol>
-          <li>
-            <strong>Download IdP Metadata:</strong> Click "Download IdP Metadata XML" above
-          </li>
-          <li>
-            <strong>Configure Datadog SAML:</strong>
-            <ul>
-              <li>Go to Datadog → Organization Settings → Login Methods</li>
-              <li>Click "Configure SAML"</li>
-              <li>Upload the IdP metadata XML file or use the metadata URL</li>
-              <li>Enable SAML authentication</li>
-            </ul>
-          </li>
-          <li>
-            <strong>Download SP Metadata:</strong> In Datadog's SAML configuration, download the SP metadata XML
-          </li>
-          <li>
-            <strong>Upload SP Metadata:</strong> Upload the Datadog SP metadata XML file above
-          </li>
-          <li>
-            <strong>Test SAML:</strong> Use the Single Sign-On URL from Datadog to test authentication
-          </li>
-        </ol>
-        
-        <div className="important-note">
-          <strong>Important:</strong> Make sure you have configured the SAML certificate and private key 
-          in your environment variables (SAML_CERT and SAML_KEY) before using SAML authentication.
         </div>
-      </div>
+      )}
     </div>
   );
 };
