@@ -1,15 +1,24 @@
-# SCIM Demo Application
+# SCIM & SAML Demo Application
 
-A full-stack demo application for provisioning users and teams into Datadog via SCIM API. This application showcases identity provider functionality with a beautiful Datadog-inspired UI.
+A comprehensive identity provider demo application that provides both **SCIM provisioning** and **SAML authentication** capabilities for Datadog. This application showcases complete identity management functionality with a beautiful Datadog-inspired UI.
 
 ## 🚀 Features
 
+### 🔐 **Identity Provider Capabilities**
+- **SAML Authentication**: Full SAML 2.0 Identity Provider for testing login flows
+- **SCIM Provisioning**: Automatic user and group provisioning to Datadog
+- **OAuth-like Redirects**: Support for redirect URLs in SAML authentication flows
+
+### 👥 **User & Group Management**
 - **User Management**: Create, update, deactivate, and delete users
 - **Group Management**: Create groups, manage team memberships
 - **Datadog SCIM Integration**: Automatic and manual sync with Datadog
-- **Modern UI**: Datadog-inspired dark theme with purple accents
 - **Real-time Sync Status**: Track synchronization status and errors
 - **Bulk Operations**: Sync all pending users/groups at once
+
+### 🎨 **User Experience**
+- **Modern UI**: Datadog-inspired dark theme with purple accents
+- **SAML Config UI**: Easy setup and testing of SAML authentication
 - **Docker Support**: Full containerization with Docker Compose
 
 ## 🏗️ Architecture
@@ -21,13 +30,23 @@ A full-stack demo application for provisioning users and teams into Datadog via 
 │  - User List    │    │  - User API     │    │                 │
 │  - Group List   │    │  - Group API    │    │                 │
 │  - SCIM Sync UI │    │  - SCIM Client  │    │                 │
+│  - SAML Config  │    │  - SAML IdP     │    │                 │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
                                 │
-                                │ HTTPS/SCIM
+                    ┌───────────┼───────────┐
+                    │           │           │
+                    ▼           │           ▼
+         ┌─────────────────┐    │  ┌─────────────────┐
+         │   Datadog SCIM  │    │  │ External Systems │
+         │      API        │    │  │   (via SAML)    │
+         │                 │    │  │                 │
+         └─────────────────┘    │  └─────────────────┘
+                                │
+                                │ HTTPS/SAML SSO
                                 ▼
                        ┌─────────────────┐
-                       │   Datadog SCIM  │
-                       │      API        │
+                       │   Datadog       │
+                       │  Authentication │
                        │                 │
                        └─────────────────┘
 ```
@@ -157,6 +176,19 @@ docker-compose up --build
 - 🔐 **SAML Config**: http://localhost:3000/saml (for SAML IdP setup)
 - 📊 **View logs in Datadog**: Check your Datadog Log Explorer
 
+### 🔐 **How to Use as Identity Provider**
+
+**For SAML Authentication Testing:**
+1. Create users in the application UI at http://localhost:3000
+2. Configure SAML settings in Datadog to use this app as IdP
+3. Users can login to Datadog using: `http://localhost:8000/saml/login`
+4. The app handles authentication and redirects users to Datadog with SAML assertion
+
+**For SCIM Provisioning:**
+1. Create users and groups in the application UI
+2. Use the "Sync" buttons to provision them to Datadog via SCIM
+3. Users are automatically created in Datadog with proper group memberships
+
 ## 🏗️ Architecture Overview
 
 Your stack includes these containers:
@@ -165,10 +197,16 @@ Your stack includes these containers:
 |---------|------|---------|----------------|
 | 🐕 **Datadog Agent** | 8125, 8126 | **Log & metric collection** | All container logs → Datadog |
 | 🐘 **PostgreSQL** | 5433 | Database | Database queries & errors |
-| 🐍 **FastAPI Backend** | 8000 | **SCIM API with structured logging** | All user/group actions & SCIM payloads |
-| ⚛️ **React Frontend** | 3000 | Modern UI | Frontend access & errors |
+| 🐍 **FastAPI Backend** | 8000 | **SCIM API & SAML IdP with structured logging** | All user/group actions, SCIM payloads, SAML authentication flows |
+| ⚛️ **React Frontend** | 3000 | Modern UI with SAML config | Frontend access, errors, SAML setup |
 
 ✨ **The agent automatically discovers and collects logs from all containers!**
+
+### 🔐 **Authentication Flows Supported**
+
+1. **SAML 2.0 Identity Provider**: Full SAML authentication with redirect URL support
+2. **SCIM Provisioning**: Automated user and group synchronization to Datadog
+3. **OAuth-like Redirects**: Secure redirect handling for SAML authentication flows
 
 ---
 
@@ -487,15 +525,15 @@ This application **doubles as a SAML Identity Provider**, allowing you to test c
 
 #### Step 1: Generate SAML Certificates
 
-```bash
+   ```bash
 # Generate self-signed certificate (for development/testing)
-openssl req -x509 -newkey rsa:2048 -keyout saml.key -out saml.crt -days 365 -nodes \
+   openssl req -x509 -newkey rsa:2048 -keyout saml.key -out saml.crt -days 365 -nodes \
   -subj "/C=US/ST=CA/L=San Francisco/O=YourCompany/CN=localhost"
-
-# Convert to environment variable format (replace newlines with \n)
-echo "SAML_CERT=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' saml.crt)"
-echo "SAML_KEY=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' saml.key)"
-```
+   
+   # Convert to environment variable format (replace newlines with \n)
+   echo "SAML_CERT=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' saml.crt)"
+   echo "SAML_KEY=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' saml.key)"
+   ```
 
 #### Step 2: Configure SAML Environment Variables
 
@@ -503,7 +541,7 @@ Add these to your `.env` file:
 
 ```bash
 # SAML Identity Provider Configuration
-SAML_ISSUER=http://localhost:8000/saml/metadata
+   SAML_ISSUER=http://localhost:8000/saml/metadata
 SAML_CERT=-----BEGIN CERTIFICATE-----\nMIIDXTCC...YOUR_CERTIFICATE_HERE...\n-----END CERTIFICATE-----
 SAML_KEY=-----BEGIN PRIVATE KEY-----\nMIIEvQ...YOUR_KEY_HERE...\n-----END PRIVATE KEY-----
 ```
@@ -512,9 +550,9 @@ SAML_KEY=-----BEGIN PRIVATE KEY-----\nMIIEvQ...YOUR_KEY_HERE...\n-----END PRIVAT
 
 #### Step 3: Start the Application
 
-```bash
-docker-compose up --build
-```
+   ```bash
+   docker-compose up --build
+   ```
 
 ### 🔧 Complete SAML Integration with Datadog
 
@@ -656,7 +694,7 @@ curl http://localhost:8000/saml/config
 ### 💡 Customer Use Cases
 
 **For Testing SCIM + SAML Integration**:
-```bash
+   ```bash
 # 1. Create users via SCIM
 curl -X POST http://localhost:8000/api/users \
   -H "Content-Type: application/json" \
