@@ -12,10 +12,9 @@ from ..schemas import (
     SAMLMetadataResponse, SAMLLoginRequest, SAMLValidateRequest, SAMLResponseData
 )
 from ..saml_client import saml_config
-from ..logging_config import ActionLogger
+from ..logging_config import action_logger
 
 logger = logging.getLogger(__name__)
-action_logger = ActionLogger()
 
 router = APIRouter(prefix="/api/saml", tags=["saml"])
 public_router = APIRouter(prefix="/saml", tags=["saml-public"])
@@ -72,27 +71,26 @@ async def upload_sp_metadata(
         db.refresh(db_metadata)
         
         # Log the metadata upload
-        action_logger.log_sync_operation(
-            operation_type="create" if not existing_metadata else "update",
-            entity_type="saml_metadata",
-            entity_id=db_metadata.id,
+        action_logger.log_saml_metadata(
+            operation="upload_sp_metadata",
+            entity_id=parsed_metadata['entityId'],
             success=True,
-            sync_data={
+            metadata_info={
                 "entity_id": parsed_metadata['entityId'],
                 "acs_url": parsed_metadata['assertionConsumerService']['url'],
+                "acs_binding": parsed_metadata['assertionConsumerService']['binding'],
                 "parsed_services": len(parsed_metadata.get('assertionConsumerServices', [])),
-                "name_id_formats": parsed_metadata.get('nameIdFormats', [])
+                "name_id_formats": parsed_metadata.get('nameIdFormats', []),
+                "operation": "update" if existing_metadata else "create"
             }
         )
         
         return db_metadata.to_dict()
         
     except Exception as e:
-        logger.error(f"Failed to parse SP metadata: {e}")
-        
-        action_logger.log_sync_operation(
-            operation_type="upload_metadata",
-            entity_type="saml_metadata",
+        # Log the metadata upload failure
+        action_logger.log_saml_metadata(
+            operation="upload_sp_metadata",
             entity_id="unknown",
             success=False,
             error=str(e)
@@ -126,15 +124,15 @@ async def get_idp_metadata(db: Session = Depends(get_db)):
         # Generate IdP metadata
         metadata_xml = saml_config.generate_idp_metadata(sp_metadata)
         
-        # Log metadata access
-        action_logger.log_sync_operation(
-            operation_type="get_metadata",
-            entity_type="saml_idp",
+        # Log metadata generation
+        action_logger.log_saml_metadata(
+            operation="generate_idp_metadata",
             entity_id="idp",
             success=True,
-            sync_data={
+            metadata_info={
                 "sp_configured": sp_metadata is not None,
-                "metadata_size": len(metadata_xml)
+                "metadata_size": len(metadata_xml),
+                "sp_entity_id": sp_metadata.get('entityId') if sp_metadata else None
             }
         )
         
@@ -145,11 +143,9 @@ async def get_idp_metadata(db: Session = Depends(get_db)):
         )
         
     except Exception as e:
-        logger.error(f"Failed to generate IdP metadata: {e}")
-        
-        action_logger.log_sync_operation(
-            operation_type="get_metadata",
-            entity_type="saml_idp",
+        # Log metadata generation failure
+        action_logger.log_saml_metadata(
+            operation="generate_idp_metadata",
             entity_id="idp",
             success=False,
             error=str(e)
@@ -176,6 +172,13 @@ async def saml_login(
         
         # Handle missing SAMLRequest
         if not SAMLRequest:
+            # Log direct access attempt
+            action_logger.log_saml_login(
+                operation="login_direct_access",
+                success=False,
+                error="SAMLRequest missing - direct access attempted"
+            )
+            
             # Return error page for direct access
             return HTMLResponse(
                 content="""
@@ -196,60 +199,100 @@ async def saml_login(
         decoded_request = base64.b64decode(SAMLRequest).decode('utf-8')
         
         # Log the login attempt
-        action_logger.log_sync_operation(
-            operation_type="saml_login_initiated",
-            entity_type="saml_auth",
-            entity_id="login",
+        action_logger.log_saml_login(
+            operation="login_initiated",
             success=True,
-            sync_data={
-                "has_relay_state": RelayState is not None,
-                "request_size": len(decoded_request)
+            saml_data={
+                "relay_state": RelayState,
+                "request_method": request.method,
+                "has_saml_request": bool(SAMLRequest)
             }
         )
         
-        # Render email confirmation form
-        html_content = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>SAML Login - Email Confirmation</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; max-width: 500px; margin: 50px auto; padding: 20px; }}
-                form {{ background: #f5f5f5; padding: 30px; border-radius: 8px; }}
-                input[type="email"] {{ width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #ddd; border-radius: 4px; }}
-                input[type="submit"] {{ background: #007cba; color: white; padding: 12px 30px; border: none; border-radius: 4px; cursor: pointer; }}
-                input[type="submit"]:hover {{ background: #005a8b; }}
-                .info {{ color: #666; font-size: 14px; margin-bottom: 20px; }}
-            </style>
-        </head>
-        <body>
-            <h2>Datadog SAML Authentication</h2>
-            <div class="info">Please enter your email address to authenticate with Datadog</div>
-            <form method="post" action="/saml/validate">
-                <input type="hidden" name="SAMLRequest" value="{SAMLRequest}">
-                <input type="hidden" name="RelayState" value="{RelayState or ''}">
-                <label for="email">Email Address:</label>
-                <input type="email" id="email" name="email" required placeholder="your.email@company.com">
-                <input type="submit" value="Authenticate">
-            </form>
-        </body>
-        </html>
-        """
-        
-        return HTMLResponse(content=html_content)
-        
-    except Exception as e:
-        logger.error(f"SAML login error: {e}")
-        
-        action_logger.log_sync_operation(
-            operation_type="saml_login_initiated",
-            entity_type="saml_auth",
-            entity_id="login",
-            success=False,
-            error=str(e)
+        # Return login form
+        return HTMLResponse(
+            content=f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>SAML Login</title>
+                <style>
+                    body {{
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                        min-height: 100vh;
+                        margin: 0;
+                        background-color: #f5f5f5;
+                    }}
+                    .login-container {{
+                        background: white;
+                        padding: 2rem;
+                        border-radius: 8px;
+                        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+                        width: 100%;
+                        max-width: 400px;
+                    }}
+                    h2 {{ color: #632ca6; margin-bottom: 1rem; }}
+                    .form-group {{ margin-bottom: 1rem; }}
+                    label {{ display: block; margin-bottom: 0.5rem; font-weight: 500; }}
+                    input[type="email"] {{
+                        width: 100%;
+                        padding: 0.75rem;
+                        border: 1px solid #ddd;
+                        border-radius: 4px;
+                        font-size: 1rem;
+                        box-sizing: border-box;
+                    }}
+                    button {{
+                        width: 100%;
+                        padding: 0.75rem;
+                        background-color: #632ca6;
+                        color: white;
+                        border: none;
+                        border-radius: 4px;
+                        font-size: 1rem;
+                        cursor: pointer;
+                        transition: background-color 0.2s;
+                    }}
+                    button:hover {{ background-color: #4f1f85; }}
+                    .note {{ font-size: 0.875rem; color: #666; margin-top: 1rem; }}
+                </style>
+            </head>
+            <body>
+                <div class="login-container">
+                    <h2>SAML Login</h2>
+                    <form method="post" action="/saml/validate">
+                        <div class="form-group">
+                            <label for="email">Email Address:</label>
+                            <input type="email" id="email" name="email" required>
+                        </div>
+                        <input type="hidden" name="SAMLRequest" value="{SAMLRequest}">
+                        <input type="hidden" name="RelayState" value="{RelayState or ''}">
+                        <button type="submit">Login</button>
+                    </form>
+                    <p class="note">Enter your email address to authenticate with SAML.</p>
+                </div>
+            </body>
+            </html>
+            """
         )
         
-        raise HTTPException(status_code=400, detail=f"Invalid SAML request: {str(e)}")
+    except Exception as e:
+        # Log login initiation failure
+        action_logger.log_saml_login(
+            operation="login_initiated",
+            success=False,
+            error=str(e),
+            saml_data={
+                "relay_state": RelayState,
+                "request_method": request.method,
+                "has_saml_request": bool(SAMLRequest)
+            }
+        )
+        
+        raise HTTPException(status_code=500, detail=f"SAML login failed: {str(e)}")
 
 @public_router.post("/validate", response_class=HTMLResponse)
 async def saml_validate(
@@ -268,13 +311,12 @@ async def saml_validate(
         ).first()
         
         if not user:
-            action_logger.log_sync_operation(
-                operation_type="saml_auth_failed",
-                entity_type="saml_auth",
-                entity_id=email,
+            # Log authentication failure
+            action_logger.log_saml_login(
+                operation="auth_failed",
+                user_email=email,
                 success=False,
-                error="User not found or inactive",
-                sync_data={"email": email}
+                error="User not found or inactive"
             )
             
             raise HTTPException(status_code=401, detail="User not found or inactive")
@@ -283,6 +325,14 @@ async def saml_validate(
         sp_metadata_record = db.query(SAMLMetadata).filter(SAMLMetadata.active == True).first()
         
         if not sp_metadata_record:
+            # Log configuration error
+            action_logger.log_saml_login(
+                operation="auth_failed",
+                user_email=email,
+                success=False,
+                error="Service Provider metadata not configured"
+            )
+            
             raise HTTPException(status_code=500, detail="Service Provider metadata not configured")
         
         sp_metadata = {
@@ -311,66 +361,89 @@ async def saml_validate(
         )
         
         # Log successful authentication
-        action_logger.log_sync_operation(
-            operation_type="saml_auth_success",
-            entity_type="saml_auth",
-            entity_id=user.email,
+        action_logger.log_saml_login(
+            operation="auth_success",
+            user_email=email,
             success=True,
-            sync_data={
-                "user_id": user.id,
-                "user_email": user.email,
-                "sp_entity_id": sp_metadata_record.entity_id,
-                "has_relay_state": RelayState is not None
+            saml_data={
+                "sp_entity_id": sp_metadata["entityId"],
+                "acs_url": sp_metadata["assertionConsumerService"]["url"],
+                "relay_state": RelayState,
+                "user_attributes": {
+                    "has_first_name": bool(user.first_name),
+                    "has_last_name": bool(user.last_name),
+                    "username": user.username
+                }
             }
         )
         
-        # Generate auto-submit form to send SAML response to SP
-        html_content = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>SAML Authentication - Redirecting</title>
-            <style>
-                body {{ font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }}
-                .spinner {{ border: 4px solid #f3f3f3; border-top: 4px solid #007cba; border-radius: 50%; 
-                           width: 50px; height: 50px; animation: spin 1s linear infinite; margin: 20px auto; }}
-                @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
-            </style>
-        </head>
-        <body>
-            <h2>Authentication Successful</h2>
-            <p>Redirecting to Datadog...</p>
-            <div class="spinner"></div>
-            
-            <form id="samlForm" method="post" action="{sp_metadata_record.acs_url}">
-                <input type="hidden" name="SAMLResponse" value="{saml_response}">
-                <input type="hidden" name="RelayState" value="{RelayState or ''}">
-            </form>
-            
-            <script>
-                // Auto-submit the form after a brief delay
-                setTimeout(function() {{
+        # Return auto-submit form
+        return HTMLResponse(
+            content=f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>SAML Authentication</title>
+                <style>
+                    body {{
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                        min-height: 100vh;
+                        margin: 0;
+                        background-color: #f5f5f5;
+                    }}
+                    .auth-container {{
+                        background: white;
+                        padding: 2rem;
+                        border-radius: 8px;
+                        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+                        text-align: center;
+                    }}
+                    h2 {{ color: #632ca6; margin-bottom: 1rem; }}
+                    .spinner {{
+                        border: 4px solid #f3f3f3;
+                        border-top: 4px solid #632ca6;
+                        border-radius: 50%;
+                        width: 40px;
+                        height: 40px;
+                        animation: spin 1s linear infinite;
+                        margin: 20px auto;
+                    }}
+                    @keyframes spin {{
+                        0% {{ transform: rotate(0deg); }}
+                        100% {{ transform: rotate(360deg); }}
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="auth-container">
+                    <h2>Authentication Successful</h2>
+                    <div class="spinner"></div>
+                    <p>Redirecting to Datadog...</p>
+                </div>
+                <form id="samlForm" method="post" action="{sp_metadata['assertionConsumerService']['url']}">
+                    <input type="hidden" name="SAMLResponse" value="{saml_response}">
+                    <input type="hidden" name="RelayState" value="{RelayState or ''}">
+                </form>
+                <script>
                     document.getElementById('samlForm').submit();
-                }}, 2000);
-            </script>
-        </body>
-        </html>
-        """
-        
-        return HTMLResponse(content=html_content)
+                </script>
+            </body>
+            </html>
+            """
+        )
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"SAML validation error: {e}")
-        
-        action_logger.log_sync_operation(
-            operation_type="saml_auth_failed",
-            entity_type="saml_auth",
-            entity_id=email,
+        # Log authentication failure
+        action_logger.log_saml_login(
+            operation="auth_failed",
+            user_email=email,
             success=False,
-            error=str(e),
-            sync_data={"email": email}
+            error=str(e)
         )
         
         raise HTTPException(status_code=500, detail=f"Authentication failed: {str(e)}")
@@ -380,72 +453,77 @@ async def saml_logout(
     SAMLRequest: Optional[str] = None,
     RelayState: Optional[str] = None
 ):
-    """SAML logout endpoint (optional)"""
+    """SAML logout endpoint"""
     
-    try:
-        # Log logout attempt
-        action_logger.log_sync_operation(
-            operation_type="saml_logout",
-            entity_type="saml_auth",
-            entity_id="logout",
-            success=True,
-            sync_data={
-                "has_saml_request": SAMLRequest is not None,
-                "has_relay_state": RelayState is not None
-            }
-        )
-        
-        # Simple logout confirmation page
-        html_content = """
+    # Log logout attempt
+    action_logger.log_saml_login(
+        operation="logout_initiated",
+        success=True,
+        saml_data={
+            "has_saml_request": bool(SAMLRequest),
+            "relay_state": RelayState
+        }
+    )
+    
+    return HTMLResponse(
+        content="""
         <!DOCTYPE html>
         <html>
         <head>
             <title>SAML Logout</title>
             <style>
-                body { font-family: Arial, sans-serif; text-align: center; margin-top: 100px; }
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    min-height: 100vh;
+                    margin: 0;
+                    background-color: #f5f5f5;
+                }
+                .logout-container {
+                    background: white;
+                    padding: 2rem;
+                    border-radius: 8px;
+                    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+                    text-align: center;
+                }
+                h2 { color: #632ca6; margin-bottom: 1rem; }
             </style>
         </head>
         <body>
-            <h2>Logout Successful</h2>
-            <p>You have been successfully logged out from the SAML Identity Provider.</p>
-            <p><a href="/">Return to Home</a></p>
+            <div class="logout-container">
+                <h2>Logout Successful</h2>
+                <p>You have been successfully logged out.</p>
+            </div>
         </body>
         </html>
         """
-        
-        return HTMLResponse(content=html_content)
-        
-    except Exception as e:
-        logger.error(f"SAML logout error: {e}")
-        raise HTTPException(status_code=500, detail=f"Logout failed: {str(e)}")
+    )
 
 @router.get("/metadata-list", response_model=list[SAMLMetadataResponse])
 async def list_sp_metadata(db: Session = Depends(get_db)):
-    """List all configured SP metadata records"""
-    
+    """List all Service Provider metadata records"""
     metadata_records = db.query(SAMLMetadata).all()
     return [record.to_dict() for record in metadata_records]
 
 @router.delete("/metadata/{metadata_id}")
 async def delete_sp_metadata(metadata_id: int, db: Session = Depends(get_db)):
-    """Delete SP metadata record"""
-    
+    """Delete a Service Provider metadata record"""
     metadata_record = db.query(SAMLMetadata).filter(SAMLMetadata.id == metadata_id).first()
-    
     if not metadata_record:
-        raise HTTPException(status_code=404, detail="Metadata record not found")
+        raise HTTPException(status_code=404, detail="Metadata not found")
     
+    entity_id = metadata_record.entity_id
     db.delete(metadata_record)
     db.commit()
     
-    action_logger.log_sync_operation(
-        operation_type="delete",
-        entity_type="saml_metadata",
-        entity_id=metadata_id,
+    # Log metadata deletion
+    action_logger.log_saml_metadata(
+        operation="delete_sp_metadata",
+        entity_id=entity_id,
         success=True,
-        sync_data={
-            "entity_id": metadata_record.entity_id
-        }
+        metadata_info={"metadata_id": metadata_id}
     )
     
     return {"message": "Metadata deleted successfully"} 

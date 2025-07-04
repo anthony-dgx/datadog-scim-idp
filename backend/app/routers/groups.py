@@ -145,23 +145,7 @@ async def auto_sync_group_to_datadog(db_group: Group, db: Session) -> tuple[bool
         db_group.sync_error = None
         db.commit()
         
-        # Log successful auto-sync
-        action_logger.log_sync_operation(
-            operation_type="auto_update",
-            entity_type="group",
-            entity_id=db_group.id,
-            datadog_id=db_group.datadog_group_id,
-            success=True,
-            sync_data={
-                "group_metadata": {
-                    "displayName": db_group.display_name,
-                    "externalId": db_group.external_id or db_group.uuid
-                },
-                "member_sync_results": member_sync_results,
-                "member_changes": member_sync_result,
-                "context": "automatic_sync_on_update"
-            }
-        )
+
         
         message = f"Group automatically synced to Datadog (added: {len(member_sync_result['added'])}, removed: {len(member_sync_result['removed'])})"
         return True, message
@@ -174,22 +158,7 @@ async def auto_sync_group_to_datadog(db_group: Group, db: Session) -> tuple[bool
         db_group.sync_error = str(e)
         db.commit()
         
-        # Log failed auto-sync
-        action_logger.log_sync_operation(
-            operation_type="auto_update",
-            entity_type="group",
-            entity_id=db_group.id,
-            datadog_id=db_group.datadog_group_id,
-            success=False,
-            error=str(e),
-            sync_data={
-                "group_metadata": {
-                    "displayName": db_group.display_name,
-                    "externalId": db_group.external_id or db_group.uuid
-                },
-                "context": "automatic_sync_on_update"
-            }
-        )
+
         
         return False, f"Auto-sync failed: {str(e)}"
 

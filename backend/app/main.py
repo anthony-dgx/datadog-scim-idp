@@ -8,11 +8,10 @@ import logging
 from .database import engine, get_db
 from .models import Base
 from .routers import users, groups, saml
-from .logging_config import setup_logging, action_logger
+from .logging_config import setup_logging
 
-# Initialize Datadog logging
+# Initialize minimal logging
 setup_logging()
-logger = logging.getLogger(__name__)
 
 # Create database tables
 Base.metadata.create_all(bind=engine)
@@ -22,30 +21,6 @@ app = FastAPI(
     description="A full-stack demo application for provisioning users and teams into Datadog via SCIM API",
     version="1.0.0"
 )
-
-@app.on_event("startup")
-async def startup_event():
-    """Log application startup"""
-    logger.info("🚀 SCIM Demo Application starting up...")
-    
-    # Log configuration status
-    config_status = {
-        "datadog_scim_url": os.getenv("DD_SCIM_BASE_URL", "NOT_SET"),
-        "datadog_bearer_token": "CONFIGURED" if os.getenv("DD_BEARER_TOKEN") else "NOT_SET",
-        "datadog_api_key": "CONFIGURED" if os.getenv("DD_API_KEY") else "NOT_SET",
-        "database_url": "CONFIGURED" if os.getenv("DATABASE_URL") else "NOT_SET",
-    }
-    
-    # Log startup with configuration
-    action_logger.logger.info(
-        "Application startup",
-        application="scim-demo",
-        version="1.0.0",
-        configuration=config_status,
-        startup_time=True
-    )
-    
-    logger.info("✅ SCIM Demo Application startup complete")
 
 # CORS configuration
 app.add_middleware(
@@ -132,8 +107,7 @@ def health_check(db: Session = Depends(get_db)):
         # Test database connection
         db.execute("SELECT 1")
         db_status = "healthy"
-    except Exception as e:
-        logger.error(f"Database health check failed: {e}")
+    except Exception:
         db_status = "unhealthy"
     
     # Check environment variables
