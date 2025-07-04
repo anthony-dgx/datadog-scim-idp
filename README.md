@@ -2,16 +2,47 @@
 
 A comprehensive identity provider demo application that provides both **SCIM provisioning** and **SAML authentication** capabilities for Datadog. This application showcases complete identity management functionality with a beautiful Datadog-inspired UI.
 
+---
+
+## ⚠️ **IMPORTANT: Educational & Testing Purpose Only**
+
+> **🚨 This is NOT a production-ready identity provider!**
+> 
+> This application is designed as an **educational and testing tool** to help you:
+> - 📚 **Learn SAML and SCIM protocols** in a hands-on environment
+> - 🧪 **Test identity management integrations** with Datadog
+> - 🔍 **Understand identity provider concepts** and workflows
+> - 🛠️ **Experiment with role mapping** and JIT provisioning
+> - 📖 **Reference implementation patterns** for your own systems
+> 
+> **❌ DO NOT USE IN PRODUCTION** - This demo lacks essential security features required for production identity providers:
+> - No multi-factor authentication
+> - Basic session management
+> - Self-signed certificates for development
+> - No advanced security hardening
+> - No compliance certifications
+> - No enterprise-grade monitoring
+> 
+> **✅ Perfect for:** Learning, testing, proof-of-concepts, and development environments
+> 
+> **❌ Not suitable for:** Production authentication, sensitive data, or real user accounts
+
+---
+
 ## 🚀 Features
 
 ### 🔐 **Identity Provider Capabilities**
 - **SAML Authentication**: Full SAML 2.0 Identity Provider for testing login flows
+- **SAML JIT Provisioning**: Automatic user creation during SAML authentication
+- **SAML Role Mapping**: Dynamic role assignment based on IdP attributes
 - **SCIM Provisioning**: Automatic user and group provisioning to Datadog
 - **OAuth-like Redirects**: Support for redirect URLs in SAML authentication flows
 
 ### 👥 **User & Group Management**
 - **User Management**: Create, update, deactivate, and delete users
 - **Group Management**: Create groups, manage team memberships
+- **Role Management**: Create, assign, and manage user roles with IdP mapping
+- **User Assignment**: Assign roles to users with comprehensive UI and API
 - **Datadog SCIM Integration**: Automatic and manual sync with Datadog
 - **Real-time Sync Status**: Track synchronization status and errors
 - **Bulk Operations**: Sync all pending users/groups at once
@@ -174,6 +205,7 @@ docker-compose up --build
 - 🔗 **Backend API**: http://localhost:8000
 - 📚 **API Docs**: http://localhost:8000/docs
 - 🔐 **SAML Config**: http://localhost:3000/saml (for SAML IdP setup)
+- 🎭 **Role Mapping**: http://localhost:3000/roles (for role management)
 - 📊 **View logs in Datadog**: Check your Datadog Log Explorer
 
 ### 🔐 **How to Use as Identity Provider**
@@ -207,6 +239,389 @@ Your stack includes these containers:
 1. **SAML 2.0 Identity Provider**: Full SAML authentication with redirect URL support
 2. **SCIM Provisioning**: Automated user and group synchronization to Datadog
 3. **OAuth-like Redirects**: Secure redirect handling for SAML authentication flows
+
+---
+
+# 🚀 SAML JIT Provisioning & Role Mapping
+
+This application supports advanced **SAML Just-In-Time (JIT) provisioning** and **Role Mapping** capabilities, allowing automatic user creation and role assignment during SAML authentication flows.
+
+## 🔄 SAML JIT Provisioning
+
+**Just-In-Time (JIT) provisioning** automatically creates users in your application when they first authenticate via SAML, eliminating the need for manual user creation.
+
+### 🎯 Key Features
+
+- **Automatic User Creation**: New users are created on first SAML login
+- **Attribute Mapping**: User attributes (name, email, title) are populated from SAML assertions
+- **Role Assignment**: Users can be assigned default roles during JIT provisioning
+- **Configurable JIT Settings**: Enable/disable JIT provisioning as needed
+- **Comprehensive Logging**: All JIT operations are logged for audit purposes
+
+### ⚙️ Configuration
+
+#### Environment Variables
+```bash
+# Enable JIT provisioning by default
+SAML_JIT_ENABLED=true
+
+# Default role for JIT-provisioned users
+SAML_JIT_DEFAULT_ROLE=user
+
+# Auto-sync JIT users to Datadog
+SAML_JIT_AUTO_SYNC=true
+```
+
+#### Using the SAML Configuration UI
+1. Navigate to **SAML Config** tab in the application
+2. Enable **"Enable JIT Provisioning"** checkbox
+3. Configure default roles for new users
+4. Save settings
+
+### 🔧 JIT Provisioning Flow
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│  External User  │    │   SAML IdP      │    │  Local Database │
+│  (First Login)  │    │  (This App)     │    │   + Datadog     │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+          │                       │                       │
+          │ 1. SAML Login         │                       │
+          │──────────────────────>│                       │
+          │                       │                       │
+          │                       │ 2. Check if user     │
+          │                       │    exists locally     │
+          │                       │──────────────────────>│
+          │                       │                       │
+          │                       │ 3. User not found     │
+          │                       │<──────────────────────│
+          │                       │                       │
+          │                       │ 4. Create user with   │
+          │                       │    SAML attributes    │
+          │                       │──────────────────────>│
+          │                       │                       │
+          │                       │ 5. Assign default     │
+          │                       │    roles              │
+          │                       │──────────────────────>│
+          │                       │                       │
+          │                       │ 6. Sync to Datadog    │
+          │                       │    (if enabled)       │
+          │                       │──────────────────────>│
+          │                       │                       │
+          │ 7. SAML Response      │                       │
+          │<──────────────────────│                       │
+          │                       │                       │
+```
+
+### 🛠️ API Endpoints
+
+#### Get JIT Configuration
+```bash
+GET /api/saml/jit/config
+```
+
+#### Update JIT Configuration
+```bash
+POST /api/saml/jit/config
+Content-Type: application/json
+
+{
+  "enabled": true,
+  "default_role": "user",
+  "auto_sync": true
+}
+```
+
+#### SAML Validation with JIT
+```bash
+POST /api/saml/validate
+Content-Type: application/json
+
+{
+  "email": "new.user@company.com",
+  "SAMLRequest": "...",
+  "RelayState": "...",
+  "enable_jit": true
+}
+```
+
+### 🔍 JIT User Creation Process
+
+When a user authenticates via SAML and doesn't exist locally:
+
+1. **Extract SAML Attributes**: Parse user information from SAML assertion
+2. **Create User Record**: Create user with attributes from SAML
+3. **Assign Default Roles**: Apply configured default roles
+4. **Sync to Datadog**: Optionally sync the new user to Datadog via SCIM
+5. **Generate SAML Response**: Complete the authentication flow
+
+**Created User Attributes**:
+- `username`: Extracted from SAML NameID
+- `email`: User's email address
+- `first_name`: From SAML `givenName` attribute
+- `last_name`: From SAML `sn` attribute
+- `title`: From SAML `title` attribute
+- `active`: Set to `true`
+- `sync_status`: Set to `pending` (or `synced` if auto-sync enabled)
+
+---
+
+## 🎭 SAML Role Mapping
+
+**SAML Role Mapping** allows dynamic role assignment based on role attributes received from Identity Providers like Datadog, enabling fine-grained access control.
+
+### 🎯 Key Features
+
+- **Dynamic Role Assignment**: Map IdP roles to local application roles
+- **Flexible Mapping**: Support for multiple IdP role values per application role
+- **Bulk Role Management**: Create multiple role mappings efficiently
+- **User Assignment Interface**: Assign roles to users with comprehensive UI
+- **Real-time Updates**: Role assignments update immediately
+- **Audit Logging**: All role operations are logged
+
+### 📋 Role Management Interface
+
+#### Navigate to Role Mapping
+1. Go to **Role Mapping** tab in the application
+2. View existing roles and their mappings
+3. See user count for each role
+4. Manage role assignments
+
+#### Create Roles
+**Single Role Creation**:
+```
+Role Name: Administrator
+Description: Full system access
+IdP Role Value: admin
+Active: ✓
+Default Role: ✗
+```
+
+**Bulk Role Creation**:
+```
+IdP Role Value  | Role Name      | Description           | Active
+admin          | Administrator  | Full system access    | ✓
+editor         | Editor         | Content management    | ✓
+viewer         | Viewer         | Read-only access      | ✓
+```
+
+### 🔧 Role Mapping Configuration
+
+#### Environment Variables
+```bash
+# Enable role mapping during SAML authentication
+SAML_ROLE_MAPPING_ENABLED=true
+
+# SAML attribute containing user roles
+SAML_ROLE_ATTRIBUTE=idp_role
+
+# Default role for users without mapped roles
+SAML_DEFAULT_ROLE=viewer
+```
+
+#### Datadog Integration
+When using with Datadog, configure SAML to include role attributes:
+
+```xml
+<!-- In your SAML configuration -->
+<saml:AttributeStatement>
+  <saml:Attribute Name="idp_role">
+    <saml:AttributeValue>admin</saml:AttributeValue>
+  </saml:Attribute>
+</saml:AttributeStatement>
+```
+
+### 🔄 Role Mapping Flow
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│  SAML Assertion │    │   Role Mapping  │    │  User Roles     │
+│  (from Datadog) │    │   Engine        │    │  Assignment     │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+          │                       │                       │
+          │ 1. SAML assertion     │                       │
+          │    with idp_role      │                       │
+          │──────────────────────>│                       │
+          │                       │                       │
+          │                       │ 2. Look up role       │
+          │                       │    mapping            │
+          │                       │──────────────────────>│
+          │                       │                       │
+          │                       │ 3. Found mapping:     │
+          │                       │    admin → Admin      │
+          │                       │<──────────────────────│
+          │                       │                       │
+          │                       │ 4. Assign role to     │
+          │                       │    user               │
+          │                       │──────────────────────>│
+          │                       │                       │
+          │                       │ 5. Update user's      │
+          │                       │    role list          │
+          │                       │──────────────────────>│
+```
+
+### 🛠️ Role Management API
+
+#### List All Roles
+```bash
+GET /api/roles
+```
+
+#### Create Role
+```bash
+POST /api/roles
+Content-Type: application/json
+
+{
+  "name": "Administrator",
+  "description": "Full system access",
+  "idp_role_value": "admin",
+  "active": true,
+  "is_default": false
+}
+```
+
+#### Bulk Create Role Mappings
+```bash
+POST /api/roles/mappings
+Content-Type: application/json
+
+[
+  {
+    "idp_role_value": "admin",
+    "role_name": "Administrator",
+    "description": "Full system access",
+    "active": true
+  },
+  {
+    "idp_role_value": "editor",
+    "role_name": "Editor",
+    "description": "Content management",
+    "active": true
+  }
+]
+```
+
+#### Assign Role to User
+```bash
+POST /api/roles/{role_id}/users/{user_id}
+```
+
+#### Remove Role from User
+```bash
+DELETE /api/roles/{role_id}/users/{user_id}
+```
+
+#### Get Role Users
+```bash
+GET /api/roles/{role_id}/users
+```
+
+### 👥 User Assignment Features
+
+#### Assign Users to Roles
+1. **View Role List**: See all roles with user counts
+2. **Assign Users**: Click "Assign Users" button for any role
+3. **User Selection**: Modal shows all users with assignment status
+4. **Bulk Assignment**: Assign multiple users at once
+5. **Real-time Updates**: User counts update immediately
+
+#### User Assignment Interface
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Assign Users to Role: Administrator                        │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Role: Administrator                                        │
+│  Description: Full system access                            │
+│  IdP Role Value: admin                                      │
+│  Current Users: 2                                           │
+│                                                             │
+│  ┌─────────────────────────────────────────────────────────┐ │
+│  │  ☑ John Doe (john.doe@company.com)              Remove │ │
+│  │  ☑ Jane Smith (jane.smith@company.com)          Remove │ │
+│  │  ☐ Bob Johnson (bob.johnson@company.com)        Assign │ │
+│  │  ☐ Alice Brown (alice.brown@company.com)        Assign │ │
+│  └─────────────────────────────────────────────────────────┘ │
+│                                                             │
+│                                    [Close]                  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 🔍 Role Mapping in Action
+
+#### Example: Datadog to Application Role Mapping
+
+**Datadog Role → Application Role**:
+- `admin` → `Administrator` (Full system access)
+- `editor` → `Editor` (Content management)
+- `viewer` → `Viewer` (Read-only access)
+- `analyst` → `Analyst` (Data analysis tools)
+
+**SAML Authentication Flow with Role Mapping**:
+1. User authenticates via SAML from Datadog
+2. SAML assertion contains `idp_role: "admin"`
+3. Application looks up role mapping: `admin` → `Administrator`
+4. User is assigned `Administrator` role
+5. User gains full system access permissions
+
+### 📊 Role Management Features
+
+#### Role List View
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Existing Roles (4)                                         │
+├─────────────────────────────────────────────────────────────┤
+│  Role Name    │ IdP Role Value │ Description      │ Users │  │
+│  Administrator│ admin          │ Full access      │   2   │  │
+│  Editor       │ editor         │ Content mgmt     │   5   │  │
+│  Viewer       │ viewer         │ Read-only        │  12   │  │
+│  Analyst      │ analyst        │ Data analysis    │   3   │  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### Role Actions
+- **Assign Users**: Open user assignment modal
+- **Deactivate**: Disable role without deleting
+- **Delete**: Remove role (only if no users assigned)
+- **Edit**: Update role properties
+
+### 🔧 Integration Examples
+
+#### Complete SAML + Role Mapping Flow
+```bash
+# 1. Create role mappings
+curl -X POST http://localhost:8000/api/roles/mappings \
+  -H "Content-Type: application/json" \
+  -d '[
+    {
+      "idp_role_value": "admin",
+      "role_name": "Administrator",
+      "description": "Full system access",
+      "active": true
+    }
+  ]'
+
+# 2. Configure SAML to include role attributes
+# (Configure in Datadog SAML settings)
+
+# 3. User authenticates via SAML
+# - SAML assertion includes idp_role: "admin"
+# - Application automatically assigns "Administrator" role
+# - User gains appropriate permissions
+
+# 4. Verify role assignment
+curl http://localhost:8000/api/users/1 | jq '.roles'
+```
+
+### 🎨 UI Enhancement
+
+The Role Mapping interface includes:
+- **Modern Design**: Clean, intuitive interface
+- **Responsive Layout**: Works on all screen sizes
+- **Real-time Updates**: Immediate feedback on actions
+- **Error Handling**: Clear error messages and validation
+- **Loading States**: Visual feedback during operations
 
 ---
 
@@ -488,13 +903,58 @@ This comprehensive guide provides everything you need to implement a production-
 5. Click **"Create Group"**
 6. Sync the group to Datadog
 
-### Step 4: Test SAML Authentication
+### Step 4: Setup Role Mapping
+
+1. Navigate to the **Role Mapping** tab
+2. Click **"Add Role"** to create a new role:
+   - Role Name: `Administrator`
+   - Description: `Full system access`
+   - IdP Role Value: `admin`
+   - Active: ✓
+3. Click **"Create Role"**
+4. Use **"Assign Users"** to assign the role to users
+5. Create additional roles as needed
+
+### Step 5: Configure SAML JIT Provisioning
 
 1. Navigate to the **SAML Config** tab
 2. Upload Datadog's SP metadata XML file
-3. Download the generated IdP metadata
-4. Configure Datadog to use this app as SAML IdP
-5. Test SSO login flow
+3. Enable **"Enable JIT Provisioning"** checkbox
+4. Configure JIT settings:
+   - Default roles for new users
+   - Auto-sync to Datadog
+5. Download the generated IdP metadata
+6. Configure Datadog to use this app as SAML IdP
+
+### Step 6: Test SAML Authentication & JIT
+
+1. **Test Existing User**:
+   - In Datadog, click **"Login with SAML"**
+   - Enter email of existing user
+   - Verify successful login with role assignments
+
+2. **Test JIT Provisioning**:
+   - Attempt login with new user email (not in database)
+   - User should be created automatically
+   - Verify user appears in Users tab with default roles
+   - Check that user is optionally synced to Datadog
+
+### Step 7: Manage Role Assignments
+
+1. **View Role Dashboard**:
+   - Navigate to **Role Mapping** tab
+   - View existing roles and user counts
+   - Monitor role assignments
+
+2. **Assign Users to Roles**:
+   - Click **"Assign Users"** for any role
+   - Select/deselect users in the modal
+   - See real-time updates in user counts
+
+3. **Bulk Role Management**:
+   - Use **"Bulk Create Roles"** for multiple mappings
+   - Import role mappings from CSV or JSON
+   - Manage large-scale role assignments
 
 ## 🔄 Advanced Workflows
 
@@ -511,6 +971,30 @@ This comprehensive guide provides everything you need to implement a production-
 2. **Dependency Management**: Ensure users exist before adding to groups
 3. **Cleanup Operations**: Remove orphaned group memberships
 4. **Metadata Updates**: Update group names and descriptions
+
+### Role Management & Assignment
+
+1. **Bulk Role Creation**: Create multiple role mappings at once
+2. **Dynamic Role Assignment**: Assign roles based on SAML attributes
+3. **User Role Management**: Assign and remove roles from users
+4. **Role Monitoring**: Track role assignments and user counts
+5. **Default Role Assignment**: Automatically assign roles to new users
+
+### SAML JIT Provisioning Workflows
+
+1. **Automated User Creation**: New users created during first SAML login
+2. **Attribute Population**: User details populated from SAML assertions
+3. **Default Role Assignment**: Assign default roles to JIT-provisioned users
+4. **Auto-sync Integration**: Automatically sync new users to Datadog
+5. **Audit Trail**: Comprehensive logging of all JIT operations
+
+### Complete Identity Management Flow
+
+1. **Setup Role Mappings**: Create roles matching your IdP structure
+2. **Configure SAML JIT**: Enable automatic user creation
+3. **Test Authentication**: Verify SAML login and role assignment
+4. **Monitor Operations**: Track user creation and role assignments
+5. **Bulk Operations**: Manage users and roles at scale
 
 ## 🔐 SAML Identity Provider for Testing
 
@@ -674,12 +1158,16 @@ curl http://localhost:8000/saml/config
 - ✅ **Email-based NameID** format
 - ✅ **Signed assertions** with X.509 certificate
 - ✅ **SP-initiated SSO** flow
-- ✅ **Just-in-Time (JIT) provisioning** via SCIM integration
+- ✅ **Just-in-Time (JIT) provisioning** with automatic user creation
+- ✅ **Role-based access control** with SAML role mapping
+- ✅ **Dynamic role assignment** based on IdP attributes
+- ✅ **Comprehensive user management** with role assignment UI
 
 **SAML Attributes Sent**:
 - `eduPersonPrincipalName` → User's email (NameID)
 - `givenName` → First name
 - `sn` → Last name (surname)
+- `idp_role` → User's role for role mapping (when configured)
 
 **Authentication Flow**:
 1. User clicks "Login with SAML" in Datadog
@@ -761,6 +1249,18 @@ This SAML functionality makes the demo app a complete **identity management test
 - Check group size limits
 - Verify member permissions
 
+**Role Assignment Issues**
+- Verify role exists and is active
+- Check user exists in database
+- Ensure role mapping is configured correctly
+- Verify IdP role attributes are being sent
+
+**JIT Provisioning Issues**
+- Check if JIT is enabled in SAML config
+- Verify SAML assertion contains required attributes
+- Ensure default roles are configured
+- Check auto-sync settings if user should appear in Datadog
+
 ### Debugging with Logs
 
 Check Datadog Log Explorer for detailed operation logs:
@@ -774,6 +1274,15 @@ logger.name:scim_operations success:false
 
 # View specific user operations
 logger.name:scim_operations user_email:john.doe@company.com
+
+# View role management operations
+logger.name:scim_operations operation:role_*
+
+# View JIT provisioning operations
+logger.name:scim_operations operation:jit_*
+
+# View SAML authentication with role mapping
+logger.name:scim_operations operation:saml_* role_mapping:true
 ```
 
 ## 🤝 Contributing
