@@ -510,20 +510,34 @@ class DatadogSCIMClient:
     
     async def update_group(self, group_id: str, group_data: SCIMGroup) -> SCIMGroupResponse:
         """
-        Update an existing group in Datadog via SCIM.
+        Update an existing group in Datadog via SCIM using PATCH operations.
         
-        ⚠️ IMPORTANT: Datadog's SCIM API does not support PUT operations for group updates.
-        This method will raise a NotImplementedError to prevent usage.
+        This method will update both metadata (displayName, externalId) and members
+        using the official Datadog SCIM API PATCH format.
         
-        For group updates, use:
-        - sync_group_members() to update group membership
-        - Group metadata (displayName, externalId) cannot be updated via SCIM API
+        Args:
+            group_id: The ID of the group to update
+            group_data: SCIMGroup object with updated data
+            
+        Returns:
+            SCIMGroupResponse with the updated group
         """
-        raise NotImplementedError(
-            "Datadog's SCIM API does not support PUT operations for group updates. "
-            "Use sync_group_members() to update group membership. "
-            "Group metadata (displayName, externalId) cannot be updated via SCIM API."
-        )
+        # Update metadata if provided
+        if group_data.displayName or group_data.externalId:
+            await self.update_group_metadata(
+                group_id=group_id,
+                display_name=group_data.displayName,
+                external_id=group_data.externalId
+            )
+        
+        # Update members if provided
+        if group_data.members:
+            target_member_ids = [member.value for member in group_data.members if member.value]
+            member_display_names = {member.value: member.display for member in group_data.members if member.value and member.display}
+            await self.sync_group_members(group_id, target_member_ids, member_display_names)
+        
+        # Return the updated group
+        return await self.get_group(group_id)
     
     async def patch_group(self, group_id: str, patch_data: SCIMPatchRequest) -> SCIMGroupResponse:
         """Partially update a group using SCIM PATCH operations."""
@@ -758,23 +772,61 @@ class DatadogSCIMClient:
             "unchanged": []
         }
     
-    async def update_group_metadata(self, group_id: str, display_name: str = None, external_id: str = None) -> SCIMGroupResponse:
+    async def update_group_metadata(self, group_id: str, display_name: str = None, external_id: str = None) -> Dict[str, Any]:
         """
-        Update only the metadata (name, external ID) of a group without affecting members.
+        Update a group's metadata (displayName and/or externalId) using PATCH operations.
+        Uses the official Datadog SCIM API format with path="None" and value as an object.
         
-        ⚠️ IMPORTANT: Datadog's SCIM API does not support metadata updates for groups.
-        This method will raise a NotImplementedError to prevent usage.
-        
-        Datadog's SCIM API limitations:
-        - PUT operations return 409 Conflict errors
-        - PATCH operations for displayName/externalId return JSON unmarshal errors
-        - Only group membership can be updated via PATCH operations
+        Args:
+            group_id: The ID of the group to update
+            display_name: New display name for the group (optional)
+            external_id: New external ID for the group (optional)
+            
+        Returns:
+            Updated group object from the API
+            
+        Raises:
+            httpx.HTTPError: If the API request fails
+            
+        Example:
+            >>> client = SCIMClient(base_url="https://api.datadoghq.com", token="your_token")
+            >>> updated_group = await client.update_group_metadata(
+            ...     group_id="123e4567-e89b-12d3-a456-426614174000",
+            ...     display_name="New Group Name"
+            ... )
+            >>> print(updated_group["displayName"])
+            "New Group Name"
         """
-        raise NotImplementedError(
-            "Datadog's SCIM API does not support group metadata updates. "
-            "Neither PUT nor PATCH operations work for displayName or externalId fields. "
-            "Only group membership can be updated via PATCH operations."
-        )
+        # Build the value object for the PATCH operation
+        value_obj = {"id": group_id}
+        
+        if display_name is not None:
+            value_obj["displayName"] = display_name
+            
+        if external_id is not None:
+            value_obj["externalId"] = external_id
+        
+        # Use the official Datadog PATCH format
+        patch_data = {
+            "Operations": [
+                {
+                    "op": "replace",
+                    "path": "None",  # Datadog uses "None" for full object replacement
+                    "value": value_obj
+                }
+            ],
+            "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"]
+        }
+        
+        response = await self._make_request("PATCH", f"/Groups/{group_id}", patch_data)
+        
+        if response.status_code != 200:
+            logger.error(f"Failed to update group metadata: {response.status_code} - {response.text}")
+            response.raise_for_status()
+            
+        result = response.json()
+        logger.info(f"Successfully updated group metadata: {result.get('displayName', 'N/A')}")
+        return result
     
     async def remove_user_from_group_by_datadog_id(self, group_id: str, datadog_user_id: str) -> bool:
         """

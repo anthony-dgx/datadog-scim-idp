@@ -24,7 +24,7 @@ public_router = APIRouter(prefix="/saml", tags=["saml-public"])
 ALLOWED_REDIRECT_DOMAINS = [
     # Datadog domains
     'datadoghq.com', 'app.datadoghq.com', 'us3.datadoghq.com', 'us5.datadoghq.com',
-    'eu1.datadoghq.com', 'ap1.datadoghq.com',
+    'eu1.datadoghq.com', 'ap1.datadoghq.com', 'croquettes.datadoghq.com',
     # Development domains
     'localhost', '127.0.0.1'
 ]

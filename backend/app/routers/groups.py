@@ -147,13 +147,25 @@ async def auto_sync_group_to_datadog(db_group: Group, db: Session) -> tuple[bool
             member_display_names
         )
         
+        # Update metadata if it changed
+        if metadata_changed:
+            try:
+                await scim_client.update_group_metadata(
+                    group_id=db_group.datadog_group_id,
+                    display_name=db_group.display_name,
+                    external_id=db_group.external_id
+                )
+                logger.info(f"Successfully updated group metadata for {db_group.display_name}")
+            except Exception as e:
+                logger.error(f"Failed to update group metadata: {e}")
+                # Continue with member sync even if metadata update fails
+        
         # Build success message
         if metadata_changed:
             message = (
-                f"Group members updated in Datadog (added: {len(member_sync_result['added'])}, "
-                f"removed: {len(member_sync_result['removed'])}). "
-                f"⚠️ Group name/metadata changes detected but cannot be updated via SCIM API "
-                f"(Datadog limitation). Please update the group name manually in Datadog."
+                f"Group updated in Datadog (name: {db_group.display_name}, "
+                f"members: added {len(member_sync_result['added'])}, "
+                f"removed {len(member_sync_result['removed'])})"
             )
         else:
             message = f"Group members updated in Datadog (added: {len(member_sync_result['added'])}, removed: {len(member_sync_result['removed'])})"
@@ -460,7 +472,16 @@ async def sync_group_to_datadog(group_id: int, db: Session = Depends(get_db)):
                 if member.datadog_user_id and member.sync_status == "synced"
             }
             
-            # Sync group members (only operation supported by Datadog's SCIM API)
+            # Update metadata if it changed
+            if metadata_changed:
+                await scim_client.update_group_metadata(
+                    group_id=db_group.datadog_group_id,
+                    display_name=expected_display_name,
+                    external_id=expected_external_id
+                )
+                logger.info(f"Updated group metadata for {db_group.display_name}")
+            
+            # Sync group members
             member_sync_result = await scim_client.sync_group_members(
                 db_group.datadog_group_id, 
                 synced_member_ids, 
@@ -470,10 +491,9 @@ async def sync_group_to_datadog(group_id: int, db: Session = Depends(get_db)):
             # Build success message
             if metadata_changed:
                 message = (
-                    f"Group members updated in Datadog (added: {len(member_sync_result['added'])}, "
-                    f"removed: {len(member_sync_result['removed'])}). "
-                    f"⚠️ Group name/metadata changes detected but cannot be updated via SCIM API "
-                    f"(Datadog limitation). Please update the group name manually in Datadog."
+                    f"Group updated in Datadog (name: {expected_display_name}, "
+                    f"members: added {len(member_sync_result['added'])}, "
+                    f"removed {len(member_sync_result['removed'])})"
                 )
             else:
                 message = f"Group members updated in Datadog (added: {len(member_sync_result['added'])}, removed: {len(member_sync_result['removed'])})"
@@ -584,7 +604,16 @@ async def bulk_sync_groups(db: Session = Depends(get_db)):
                     if member.datadog_user_id and member.sync_status == "synced"
                 }
                 
-                # Sync group members (only operation supported by Datadog's SCIM API)
+                # Update metadata if it changed
+                if metadata_changed:
+                    await scim_client.update_group_metadata(
+                        group_id=group.datadog_group_id,
+                        display_name=expected_display_name,
+                        external_id=expected_external_id
+                    )
+                    logger.info(f"Updated group metadata for {group.display_name}")
+                
+                # Sync group members
                 await scim_client.sync_group_members(
                     group.datadog_group_id, 
                     synced_member_ids, 
@@ -593,10 +622,6 @@ async def bulk_sync_groups(db: Session = Depends(get_db)):
                 
                 # Get updated group state for scim_response
                 scim_response = await scim_client.get_group(group.datadog_group_id)
-                
-                # Note: Group metadata updates are not supported by Datadog's SCIM API
-                if metadata_changed:
-                    logger.warning(f"Group {group.id} metadata changed but cannot be updated via SCIM API (Datadog limitation)")
             else:
                 # Create new group with initial members
                 scim_group = group_to_scim(group, scim_client.base_url)
@@ -624,7 +649,7 @@ async def bulk_sync_groups(db: Session = Depends(get_db)):
 
 @router.patch("/{group_id}/metadata", response_model=SyncResponse)
 async def update_group_metadata_only(group_id: int, db: Session = Depends(get_db)):
-    """Test endpoint: Explains that group metadata updates are not supported via SCIM API"""
+    """Test endpoint: Update group metadata (displayName, externalId) in Datadog using SCIM API"""
     db_group = db.query(Group).filter(Group.id == group_id).first()
     if not db_group:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -632,16 +657,30 @@ async def update_group_metadata_only(group_id: int, db: Session = Depends(get_db
     if not db_group.datadog_group_id:
         raise HTTPException(status_code=400, detail="Group must be synced to Datadog first")
     
-    # Return clear error message about Datadog's SCIM API limitations
-    return SyncResponse(
-        success=False,
-        message="Group metadata updates are not supported by Datadog's SCIM API",
-        error=(
-            "Datadog's SCIM API does not support updating group metadata (displayName, externalId). "
-            "Both PUT and PATCH operations for metadata fail. Only group membership can be updated via SCIM. "
-            "Please update the group name manually in Datadog's web interface."
+    try:
+        # Update group metadata using the working PATCH format
+        await scim_client.update_group_metadata(
+            group_id=db_group.datadog_group_id,
+            display_name=db_group.display_name,
+            external_id=db_group.external_id
         )
-    )
+        
+        logger.info(f"Successfully updated group metadata for {db_group.display_name}")
+        
+        return SyncResponse(
+            success=True,
+            message=f"Successfully updated group metadata in Datadog",
+            datadog_id=db_group.datadog_group_id
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to update group metadata: {e}")
+        
+        return SyncResponse(
+            success=False,
+            message="Failed to update group metadata in Datadog",
+            error=str(e)
+        )
 
 @router.get("/{group_id}/debug", response_model=Dict[str, Any])
 async def debug_group_state(group_id: int, db: Session = Depends(get_db)):
