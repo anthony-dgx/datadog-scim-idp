@@ -358,4 +358,38 @@ async def bulk_sync_users(db: Session = Depends(get_db)):
         success=failed_count == 0,
         message=f"Synced {synced_count} users, {failed_count} failed",
         error="; ".join(errors) if errors else None
-    ) 
+    )
+
+@router.delete("/clear-all")
+def clear_all_users(db: Session = Depends(get_db)):
+    """Clear all users from the local database (for testing/development)"""
+    try:
+        # Get count before deletion for logging
+        user_count = db.query(User).count()
+        
+        if user_count == 0:
+            return {
+                "success": True,
+                "message": "No users to clear",
+                "deleted_count": 0
+            }
+        
+        # Delete all users (this will also remove them from group memberships due to cascade)
+        db.query(User).delete()
+        db.commit()
+        
+        logger.info(f"Cleared {user_count} users from local database")
+        
+        return {
+            "success": True,
+            "message": f"Successfully cleared {user_count} users from local database",
+            "deleted_count": user_count
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to clear users from database: {e}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to clear users from database: {str(e)}"
+        ) 

@@ -13,7 +13,11 @@ import {
   CheckCircle,
   AlertCircle,
   UserMinus,
-  RotateCcw
+  RotateCcw,
+  Search,
+  ChevronDown,
+  ChevronUp,
+  Database
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 
@@ -26,6 +30,8 @@ const GroupList = () => {
   const [showModal, setShowModal] = useState(false);
   const [editingGroup, setEditingGroup] = useState(null);
   const [syncing, setSyncing] = useState({});
+  const [searchTerm, setSearchTerm] = useState('');
+  const [expandedGroups, setExpandedGroups] = useState({});
   const [formData, setFormData] = useState({
     display_name: '',
     description: '',
@@ -172,6 +178,49 @@ const GroupList = () => {
     }
   };
 
+  const handleClearAll = async () => {
+    const groupCount = groups.length;
+    if (groupCount === 0) {
+      toast.info('No groups to clear');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `⚠️ WARNING: This will permanently delete ALL ${groupCount} groups from the local database.\n\n` +
+      'This action cannot be undone. Are you sure you want to continue?'
+    );
+    
+    if (!confirmed) return;
+
+    // Double confirmation for destructive action
+    const doubleConfirmed = window.confirm(
+      `🚨 FINAL CONFIRMATION: You are about to delete ALL ${groupCount} groups.\n\n` +
+      'Type "DELETE ALL GROUPS" and click OK to proceed.'
+    );
+    
+    if (!doubleConfirmed) return;
+
+    setSyncing(prev => ({ ...prev, clearAll: true }));
+    
+    try {
+      const response = await axios.delete(`${API_BASE_URL}/api/groups/clear-all`);
+      
+      if (response.data.success) {
+        toast.success(response.data.message);
+        setGroups([]);
+        setExpandedGroups({});
+      } else {
+        toast.error('Failed to clear groups');
+      }
+    } catch (error) {
+      const message = error.response?.data?.detail || 'Failed to clear groups';
+      toast.error(message);
+      console.error('Error clearing groups:', error);
+    } finally {
+      setSyncing(prev => ({ ...prev, clearAll: false }));
+    }
+  };
+
   const handleCloseModal = () => {
     setShowModal(false);
     setEditingGroup(null);
@@ -241,6 +290,18 @@ const GroupList = () => {
     return users.filter(user => !memberIds.includes(user.id));
   };
 
+  const toggleExpandGroup = (groupId) => {
+    setExpandedGroups(prev => ({
+      ...prev,
+      [groupId]: !prev[groupId]
+    }));
+  };
+
+  const filteredGroups = groups.filter(group => 
+    group.display_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    group.description?.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
   if (loading) {
     return (
       <div className="loading">
@@ -260,6 +321,21 @@ const GroupList = () => {
           </p>
         </div>
         <div style={{ display: 'flex', gap: '12px' }}>
+          {groups.length > 0 && (
+            <button 
+              onClick={handleClearAll}
+              className="btn btn-danger"
+              disabled={syncing.clearAll}
+              title="Clear all groups from local database (for testing/development)"
+            >
+              {syncing.clearAll ? (
+                <div className="spinner" style={{ width: '16px', height: '16px', margin: 0 }}></div>
+              ) : (
+                <Database size={16} />
+              )}
+              Clear All
+            </button>
+          )}
           <button 
             onClick={handleBulkSync}
             className="btn btn-secondary"
@@ -283,24 +359,67 @@ const GroupList = () => {
         </div>
       </div>
 
-      {groups.length === 0 ? (
+      {/* Search Bar */}
+      <div style={{ marginBottom: '24px' }}>
+        <div style={{ position: 'relative' }}>
+          <Search size={20} style={{ 
+            position: 'absolute', 
+            left: '12px', 
+            top: '50%', 
+            transform: 'translateY(-50%)', 
+            color: '#8b949e' 
+          }} />
+          <input
+            type="text"
+            placeholder="Search groups by name or description..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="form-input"
+            style={{ 
+              paddingLeft: '44px',
+              fontSize: '14px',
+              height: '40px'
+            }}
+          />
+        </div>
+      </div>
+
+      {filteredGroups.length === 0 ? (
         <div className="empty-state">
-          <UserPlus className="empty-state-icon" />
-          <h3 className="empty-state-title">No Groups Found</h3>
-          <p className="empty-state-description">
-            Get started by creating your first group. Groups automatically sync to Datadog when updated.
-          </p>
-          <button 
-            onClick={() => setShowModal(true)}
-            className="btn btn-primary"
-          >
-            <Plus size={16} />
-            Create Group
-          </button>
+          {searchTerm ? (
+            <>
+              <Search className="empty-state-icon" />
+              <h3 className="empty-state-title">No Groups Found</h3>
+              <p className="empty-state-description">
+                No groups match your search criteria. Try adjusting your search terms.
+              </p>
+              <button 
+                onClick={() => setSearchTerm('')}
+                className="btn btn-secondary"
+              >
+                Clear Search
+              </button>
+            </>
+          ) : (
+            <>
+              <UserPlus className="empty-state-icon" />
+              <h3 className="empty-state-title">No Groups Found</h3>
+              <p className="empty-state-description">
+                Get started by creating your first group. Groups automatically sync to Datadog when updated.
+              </p>
+              <button 
+                onClick={() => setShowModal(true)}
+                className="btn btn-primary"
+              >
+                <Plus size={16} />
+                Create Group
+              </button>
+            </>
+          )}
         </div>
       ) : (
         <div style={{ display: 'grid', gap: '24px' }}>
-          {groups.map(group => (
+          {filteredGroups.map(group => (
             <div key={group.id} className="card" style={{ margin: 0 }}>
               <div className="card-header">
                 <div>
@@ -362,9 +481,30 @@ const GroupList = () => {
 
               <div>
                 <div style={{ marginBottom: '16px' }}>
-                  <h4 style={{ fontSize: '14px', fontWeight: '600', color: '#f0f6fc', marginBottom: '8px' }}>
-                    Members ({group.members.length})
-                  </h4>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <h4 style={{ fontSize: '14px', fontWeight: '600', color: '#f0f6fc', margin: 0 }}>
+                      Members ({group.members.length})
+                    </h4>
+                    {getAvailableUsers(group).length > 0 && (
+                      <button
+                        onClick={() => toggleExpandGroup(group.id)}
+                        className="btn btn-secondary btn-sm"
+                        title={expandedGroups[group.id] ? "Hide add members" : "Show add members"}
+                      >
+                        {expandedGroups[group.id] ? (
+                          <>
+                            <ChevronUp size={14} />
+                            Hide Add Members
+                          </>
+                        ) : (
+                          <>
+                            <ChevronDown size={14} />
+                            Add Members
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
                   
                   {group.members.length === 0 ? (
                     <p style={{ color: '#8b949e', fontSize: '14px', fontStyle: 'italic' }}>
@@ -419,16 +559,12 @@ const GroupList = () => {
                   )}
                 </div>
 
-                <div>
-                  <h4 style={{ fontSize: '14px', fontWeight: '600', color: '#f0f6fc', marginBottom: '8px' }}>
-                    Add Members
-                  </h4>
-                  
-                  {getAvailableUsers(group).length === 0 ? (
-                    <p style={{ color: '#8b949e', fontSize: '14px', fontStyle: 'italic' }}>
-                      All users are already members of this group
-                    </p>
-                  ) : (
+                {/* Collapsible Add Members Section */}
+                {expandedGroups[group.id] && getAvailableUsers(group).length > 0 && (
+                  <div style={{ marginTop: '16px', padding: '16px', background: 'rgba(177, 186, 196, 0.02)', borderRadius: '8px', border: '1px solid #30363d' }}>
+                    <h4 style={{ fontSize: '14px', fontWeight: '600', color: '#f0f6fc', marginBottom: '12px' }}>
+                      Available Users ({getAvailableUsers(group).length})
+                    </h4>
                     <div style={{ display: 'grid', gap: '8px' }}>
                       {getAvailableUsers(group).map(user => (
                         <div key={user.id} style={{ 
@@ -475,8 +611,8 @@ const GroupList = () => {
                         </div>
                       ))}
                     </div>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             </div>
           ))}

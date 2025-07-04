@@ -778,4 +778,38 @@ async def cleanup_remove_user_from_datadog_group(group_id: int, datadog_user_id:
             success=False,
             message="Failed to remove user from Datadog group",
             error=str(e)
+        )
+
+@router.delete("/clear-all")
+def clear_all_groups(db: Session = Depends(get_db)):
+    """Clear all groups from the local database (for testing/development)"""
+    try:
+        # Get count before deletion for logging
+        group_count = db.query(Group).count()
+        
+        if group_count == 0:
+            return {
+                "success": True,
+                "message": "No groups to clear",
+                "deleted_count": 0
+            }
+        
+        # Delete all groups (this will also remove member relationships due to cascade)
+        db.query(Group).delete()
+        db.commit()
+        
+        logger.info(f"Cleared {group_count} groups from local database")
+        
+        return {
+            "success": True,
+            "message": f"Successfully cleared {group_count} groups from local database",
+            "deleted_count": group_count
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to clear groups from database: {e}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to clear groups from database: {str(e)}"
         ) 

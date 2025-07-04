@@ -12,7 +12,8 @@ import {
   CheckCircle,
   AlertCircle,
   UserX,
-  RotateCcw
+  RotateCcw,
+  Database
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 
@@ -171,6 +172,48 @@ const UserList = () => {
     }
   };
 
+  const handleClearAll = async () => {
+    const userCount = users.length;
+    if (userCount === 0) {
+      toast.info('No users to clear');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `⚠️ WARNING: This will permanently delete ALL ${userCount} users from the local database.\n\n` +
+      'This action cannot be undone. Are you sure you want to continue?'
+    );
+    
+    if (!confirmed) return;
+
+    // Double confirmation for destructive action
+    const doubleConfirmed = window.confirm(
+      `🚨 FINAL CONFIRMATION: You are about to delete ALL ${userCount} users.\n\n` +
+      'Type "DELETE ALL USERS" and click OK to proceed.'
+    );
+    
+    if (!doubleConfirmed) return;
+
+    setSyncing(prev => ({ ...prev, clearAll: true }));
+    
+    try {
+      const response = await axios.delete(`${API_BASE_URL}/api/users/clear-all`);
+      
+      if (response.data.success) {
+        toast.success(response.data.message);
+        setUsers([]);
+      } else {
+        toast.error('Failed to clear users');
+      }
+    } catch (error) {
+      const message = error.response?.data?.detail || 'Failed to clear users';
+      toast.error(message);
+      console.error('Error clearing users:', error);
+    } finally {
+      setSyncing(prev => ({ ...prev, clearAll: false }));
+    }
+  };
+
   const handleCloseModal = () => {
     setShowModal(false);
     setEditingUser(null);
@@ -248,6 +291,21 @@ const UserList = () => {
           </p>
         </div>
         <div style={{ display: 'flex', gap: '12px' }}>
+          {users.length > 0 && (
+            <button 
+              onClick={handleClearAll}
+              className="btn btn-danger"
+              disabled={syncing.clearAll}
+              title="Clear all users from local database (for testing/development)"
+            >
+              {syncing.clearAll ? (
+                <div className="spinner" style={{ width: '16px', height: '16px', margin: 0 }}></div>
+              ) : (
+                <Database size={16} />
+              )}
+              Clear All
+            </button>
+          )}
           <button 
             onClick={handleBulkSync}
             className="btn btn-secondary"
@@ -459,7 +517,7 @@ const UserList = () => {
               </div>
 
               <div className="form-group">
-                <label className="form-label">
+                <label className="form-label" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <input
                     type="checkbox"
                     name="active"
