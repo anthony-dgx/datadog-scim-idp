@@ -16,11 +16,12 @@ router = APIRouter(prefix="/groups", tags=["groups"])
 logger = logging.getLogger(__name__)
 
 def group_to_scim(group: Group, base_url: str) -> SCIMGroup:
-    """Convert a Group model to SCIM format"""
+    """Convert a Group model to SCIM format following official Datadog SCIM API specification"""
     members = []
     for member in group.members:
         # Only include members that have been successfully synced to Datadog
         if member.datadog_user_id and member.sync_status == "synced":
+            # Use official Datadog SCIM API format as per documentation
             members.append(SCIMGroupMember(
                 **{
                     "$ref": f"{base_url}/Users/{member.datadog_user_id}",
@@ -112,7 +113,21 @@ async def auto_sync_group_to_datadog(db_group: Group, db: Session) -> tuple[bool
         if member_sync_results:
             await asyncio.sleep(1)
         
-        # Update group metadata and sync members
+        # Get current group state from Datadog to check for changes
+        current_group = await scim_client.get_group(db_group.datadog_group_id)
+        
+        # Check if metadata has changed (but we can't update it via SCIM API)
+        current_display_name = current_group.displayName
+        current_external_id = current_group.externalId
+        expected_display_name = db_group.display_name
+        expected_external_id = db_group.external_id or db_group.uuid
+        
+        metadata_changed = (
+            current_display_name != expected_display_name or 
+            current_external_id != expected_external_id
+        )
+        
+        # Prepare member data for synchronization
         synced_member_ids = [
             member.datadog_user_id 
             for member in db_group.members 
@@ -125,19 +140,23 @@ async def auto_sync_group_to_datadog(db_group: Group, db: Session) -> tuple[bool
             if member.datadog_user_id and member.sync_status == "synced"
         }
         
-        # Use incremental member sync
+        # Sync group members (only operation supported by Datadog's SCIM API)
         member_sync_result = await scim_client.sync_group_members(
             db_group.datadog_group_id, 
             synced_member_ids, 
             member_display_names
         )
         
-        # Update group metadata
-        scim_response = await scim_client.update_group_metadata(
-            db_group.datadog_group_id,
-            display_name=db_group.display_name,
-            external_id=db_group.external_id or db_group.uuid
-        )
+        # Build success message
+        if metadata_changed:
+            message = (
+                f"Group members updated in Datadog (added: {len(member_sync_result['added'])}, "
+                f"removed: {len(member_sync_result['removed'])}). "
+                f"⚠️ Group name/metadata changes detected but cannot be updated via SCIM API "
+                f"(Datadog limitation). Please update the group name manually in Datadog."
+            )
+        else:
+            message = f"Group members updated in Datadog (added: {len(member_sync_result['added'])}, removed: {len(member_sync_result['removed'])})"
         
         # Update sync status
         db_group.last_synced = datetime.utcnow()
@@ -145,9 +164,6 @@ async def auto_sync_group_to_datadog(db_group: Group, db: Session) -> tuple[bool
         db_group.sync_error = None
         db.commit()
         
-
-        
-        message = f"Group automatically synced to Datadog (added: {len(member_sync_result['added'])}, removed: {len(member_sync_result['removed'])})"
         return True, message
         
     except Exception as e:
@@ -157,8 +173,6 @@ async def auto_sync_group_to_datadog(db_group: Group, db: Session) -> tuple[bool
         db_group.sync_status = "failed"
         db_group.sync_error = str(e)
         db.commit()
-        
-
         
         return False, f"Auto-sync failed: {str(e)}"
 
@@ -305,18 +319,7 @@ async def sync_member_to_datadog_group(group_id: int, user_id: int, db: Session 
             db_user.formatted_name or db_user.username
         )
         
-        action_logger.log_sync_operation(
-            operation_type="add_member",
-            entity_type="group",
-            entity_id=group_id,
-            datadog_id=db_group.datadog_group_id,
-            success=True,
-            sync_data={
-                "member_user_id": user_id,
-                "member_datadog_id": db_user.datadog_user_id,
-                "member_name": db_user.username
-            }
-        )
+        logger.info(f"Successfully added user {db_user.username} to group {db_group.display_name} in Datadog")
         
         return SyncResponse(
             success=True,
@@ -327,14 +330,7 @@ async def sync_member_to_datadog_group(group_id: int, user_id: int, db: Session 
     except Exception as e:
         logger.error(f"Failed to sync member {user_id} to group {group_id}: {e}")
         
-        action_logger.log_sync_operation(
-            operation_type="add_member",
-            entity_type="group",
-            entity_id=group_id,
-            datadog_id=db_group.datadog_group_id,
-            success=False,
-            error=str(e)
-        )
+        logger.error(f"Failed to add user to group in Datadog: {e}")
         
         return SyncResponse(
             success=False,
@@ -369,18 +365,7 @@ async def remove_member_from_datadog_group(group_id: int, user_id: int, db: Sess
             db_user.datadog_user_id
         )
         
-        action_logger.log_sync_operation(
-            operation_type="remove_member",
-            entity_type="group",
-            entity_id=group_id,
-            datadog_id=db_group.datadog_group_id,
-            success=True,
-            sync_data={
-                "member_user_id": user_id,
-                "member_datadog_id": db_user.datadog_user_id,
-                "member_name": db_user.username
-            }
-        )
+        logger.info(f"Successfully removed user {db_user.username} from group {db_group.display_name} in Datadog")
         
         return SyncResponse(
             success=True,
@@ -391,14 +376,7 @@ async def remove_member_from_datadog_group(group_id: int, user_id: int, db: Sess
     except Exception as e:
         logger.error(f"Failed to remove member {user_id} from group {group_id}: {e}")
         
-        action_logger.log_sync_operation(
-            operation_type="remove_member",
-            entity_type="group",
-            entity_id=group_id,
-            datadog_id=db_group.datadog_group_id,
-            success=False,
-            error=str(e)
-        )
+        logger.error(f"Failed to remove user from group in Datadog: {e}")
         
         return SyncResponse(
             success=False,
@@ -411,13 +389,7 @@ async def sync_group_to_datadog(group_id: int, db: Session = Depends(get_db)):
     """Sync a group to Datadog via SCIM"""
     db_group = db.query(Group).filter(Group.id == group_id).first()
     if not db_group:
-        action_logger.log_sync_operation(
-            operation_type="sync",
-            entity_type="group",
-            entity_id=group_id,
-            success=False,
-            error="Group not found"
-        )
+        logger.error(f"Group {group_id} not found for sync")
         raise HTTPException(status_code=404, detail="Group not found")
     
     try:
@@ -437,19 +409,7 @@ async def sync_group_to_datadog(group_id: int, db: Session = Depends(get_db)):
                     member.sync_error = None
                     
                     # Log successful member sync
-                    action_logger.log_sync_operation(
-                        operation_type="create",
-                        entity_type="user",
-                        entity_id=member.id,
-                        datadog_id=scim_response.id,
-                        success=True,
-                        sync_data={
-                            "context": "group_member_auto_sync",
-                            "parent_group_id": group_id,
-                            "user_data": member.to_dict(),
-                            "scim_payload": scim_user.model_dump()
-                        }
-                    )
+                    logger.info(f"Successfully synced member {member.username} to Datadog (ID: {scim_response.id})")
                     member_sync_results.append({"user_id": member.id, "success": True})
                     
                 except Exception as e:
@@ -458,18 +418,7 @@ async def sync_group_to_datadog(group_id: int, db: Session = Depends(get_db)):
                     member.sync_error = str(e)
                     
                     # Log failed member sync
-                    action_logger.log_sync_operation(
-                        operation_type="create",
-                        entity_type="user",
-                        entity_id=member.id,
-                        success=False,
-                        error=str(e),
-                        sync_data={
-                            "context": "group_member_auto_sync",
-                            "parent_group_id": group_id,
-                            "user_data": member.to_dict()
-                        }
-                    )
+                    logger.error(f"Failed to sync member {member.username} to Datadog: {e}")
                     member_sync_results.append({"user_id": member.id, "success": False, "error": str(e)})
         
         # Commit member updates
@@ -484,7 +433,21 @@ async def sync_group_to_datadog(group_id: int, db: Session = Depends(get_db)):
         operation_type = "update" if db_group.datadog_group_id else "create"
         
         if db_group.datadog_group_id:
-            # Update existing group using member sync instead of full replacement
+            # Get current group state from Datadog to determine what needs updating
+            current_group = await scim_client.get_group(db_group.datadog_group_id)
+            
+            # Check if metadata has changed
+            current_display_name = current_group.displayName
+            current_external_id = current_group.externalId
+            expected_display_name = db_group.display_name
+            expected_external_id = db_group.external_id or db_group.uuid
+            
+            metadata_changed = (
+                current_display_name != expected_display_name or 
+                current_external_id != expected_external_id
+            )
+            
+            # Prepare member data
             synced_member_ids = [
                 member.datadog_user_id 
                 for member in db_group.members 
@@ -497,20 +460,23 @@ async def sync_group_to_datadog(group_id: int, db: Session = Depends(get_db)):
                 if member.datadog_user_id and member.sync_status == "synced"
             }
             
-            # Use incremental member sync instead of full group update
+            # Sync group members (only operation supported by Datadog's SCIM API)
             member_sync_result = await scim_client.sync_group_members(
                 db_group.datadog_group_id, 
                 synced_member_ids, 
                 member_display_names
             )
             
-            # Update group metadata (name, description) using PATCH to avoid member conflicts
-            scim_response = await scim_client.update_group_metadata(
-                db_group.datadog_group_id,
-                display_name=db_group.display_name,
-                external_id=db_group.external_id or db_group.uuid
-            )
-            message = f"Group updated in Datadog (added: {len(member_sync_result['added'])}, removed: {len(member_sync_result['removed'])})"
+            # Build success message
+            if metadata_changed:
+                message = (
+                    f"Group members updated in Datadog (added: {len(member_sync_result['added'])}, "
+                    f"removed: {len(member_sync_result['removed'])}). "
+                    f"⚠️ Group name/metadata changes detected but cannot be updated via SCIM API "
+                    f"(Datadog limitation). Please update the group name manually in Datadog."
+                )
+            else:
+                message = f"Group members updated in Datadog (added: {len(member_sync_result['added'])}, removed: {len(member_sync_result['removed'])})"
             
             # Store member sync results for logging
             member_sync_results.extend([
@@ -518,6 +484,9 @@ async def sync_group_to_datadog(group_id: int, db: Session = Depends(get_db)):
             ] + [
                 {"action": "removed", "user_id": uid} for uid in member_sync_result["removed"]
             ])
+            
+            # Get updated group state for scim_response
+            scim_response = await scim_client.get_group(db_group.datadog_group_id)
             
         else:
             # Create new group with initial members
@@ -533,25 +502,8 @@ async def sync_group_to_datadog(group_id: int, db: Session = Depends(get_db)):
         
         db.commit()
         
-        # Log successful group sync with comprehensive data
-        action_logger.log_sync_operation(
-            operation_type=operation_type,
-            entity_type="group",
-            entity_id=group_id,
-            datadog_id=scim_response.id,
-            success=True,
-            sync_data={
-                "original_state": original_group_state,
-                "updated_state": db_group.to_dict(),
-                "group_metadata": {
-                    "displayName": db_group.display_name,
-                    "externalId": db_group.external_id or db_group.uuid
-                },
-                "datadog_response": scim_response.model_dump() if hasattr(scim_response, 'model_dump') else str(scim_response),
-                "member_sync_results": member_sync_results,
-                "member_count": len(db_group.members)
-            }
-        )
+        # Log successful group sync
+        logger.info(f"Successfully synced group {db_group.display_name} to Datadog (ID: {scim_response.id})")
         
         return SyncResponse(
             success=True,
@@ -568,22 +520,7 @@ async def sync_group_to_datadog(group_id: int, db: Session = Depends(get_db)):
         db.commit()
         
         # Log failed group sync
-        action_logger.log_sync_operation(
-            operation_type=operation_type if 'operation_type' in locals() else "sync",
-            entity_type="group",
-            entity_id=group_id,
-            datadog_id=db_group.datadog_group_id,
-            success=False,
-            error=str(e),
-            sync_data={
-                "original_state": original_group_state if 'original_group_state' in locals() else None,
-                "group_metadata": {
-                    "displayName": db_group.display_name,
-                    "externalId": db_group.external_id or db_group.uuid
-                } if db_group else None,
-                "member_sync_results": member_sync_results if 'member_sync_results' in locals() else []
-            }
-        )
+        logger.error(f"Failed to sync group {group_id} to Datadog: {e}")
         
         return SyncResponse(
             success=False,
@@ -620,7 +557,21 @@ async def bulk_sync_groups(db: Session = Depends(get_db)):
             
             # Sync the group using the improved approach
             if group.datadog_group_id:
-                # Use incremental member sync for existing groups
+                # Get current group state from Datadog to determine what needs updating
+                current_group = await scim_client.get_group(group.datadog_group_id)
+                
+                # Check if metadata has changed
+                current_display_name = current_group.displayName
+                current_external_id = current_group.externalId
+                expected_display_name = group.display_name
+                expected_external_id = group.external_id or group.uuid
+                
+                metadata_changed = (
+                    current_display_name != expected_display_name or 
+                    current_external_id != expected_external_id
+                )
+                
+                # Prepare member data
                 synced_member_ids = [
                     member.datadog_user_id 
                     for member in group.members 
@@ -633,18 +584,19 @@ async def bulk_sync_groups(db: Session = Depends(get_db)):
                     if member.datadog_user_id and member.sync_status == "synced"
                 }
                 
+                # Sync group members (only operation supported by Datadog's SCIM API)
                 await scim_client.sync_group_members(
                     group.datadog_group_id, 
                     synced_member_ids, 
                     member_display_names
                 )
                 
-                # Update group metadata using PATCH to avoid member conflicts
-                scim_response = await scim_client.update_group_metadata(
-                    group.datadog_group_id,
-                    display_name=group.display_name,
-                    external_id=group.external_id or group.uuid
-                )
+                # Get updated group state for scim_response
+                scim_response = await scim_client.get_group(group.datadog_group_id)
+                
+                # Note: Group metadata updates are not supported by Datadog's SCIM API
+                if metadata_changed:
+                    logger.warning(f"Group {group.id} metadata changed but cannot be updated via SCIM API (Datadog limitation)")
             else:
                 # Create new group with initial members
                 scim_group = group_to_scim(group, scim_client.base_url)
@@ -672,7 +624,7 @@ async def bulk_sync_groups(db: Session = Depends(get_db)):
 
 @router.patch("/{group_id}/metadata", response_model=SyncResponse)
 async def update_group_metadata_only(group_id: int, db: Session = Depends(get_db)):
-    """Test endpoint: Update only group metadata in Datadog without affecting members"""
+    """Test endpoint: Explains that group metadata updates are not supported via SCIM API"""
     db_group = db.query(Group).filter(Group.id == group_id).first()
     if not db_group:
         raise HTTPException(status_code=404, detail="Group not found")
@@ -680,51 +632,16 @@ async def update_group_metadata_only(group_id: int, db: Session = Depends(get_db
     if not db_group.datadog_group_id:
         raise HTTPException(status_code=400, detail="Group must be synced to Datadog first")
     
-    try:
-        # Update only metadata using PATCH operations
-        scim_response = await scim_client.update_group_metadata(
-            db_group.datadog_group_id,
-            display_name=db_group.display_name,
-            external_id=db_group.external_id or db_group.uuid
+    # Return clear error message about Datadog's SCIM API limitations
+    return SyncResponse(
+        success=False,
+        message="Group metadata updates are not supported by Datadog's SCIM API",
+        error=(
+            "Datadog's SCIM API does not support updating group metadata (displayName, externalId). "
+            "Both PUT and PATCH operations for metadata fail. Only group membership can be updated via SCIM. "
+            "Please update the group name manually in Datadog's web interface."
         )
-        
-        action_logger.log_sync_operation(
-            operation_type="update_metadata",
-            entity_type="group",
-            entity_id=group_id,
-            datadog_id=db_group.datadog_group_id,
-            success=True,
-            sync_data={
-                "updated_metadata": {
-                    "displayName": db_group.display_name,
-                    "externalId": db_group.external_id or db_group.uuid
-                }
-            }
-        )
-        
-        return SyncResponse(
-            success=True,
-            message=f"Group metadata updated in Datadog: {db_group.display_name}",
-            datadog_id=db_group.datadog_group_id
-        )
-        
-    except Exception as e:
-        logger.error(f"Failed to update group metadata {group_id}: {e}")
-        
-        action_logger.log_sync_operation(
-            operation_type="update_metadata",
-            entity_type="group",
-            entity_id=group_id,
-            datadog_id=db_group.datadog_group_id,
-            success=False,
-            error=str(e)
-        )
-        
-        return SyncResponse(
-            success=False,
-            message="Failed to update group metadata in Datadog",
-            error=str(e)
-        )
+    )
 
 @router.get("/{group_id}/debug", response_model=Dict[str, Any])
 async def debug_group_state(group_id: int, db: Session = Depends(get_db)):
@@ -749,9 +666,9 @@ async def debug_group_state(group_id: int, db: Session = Depends(get_db)):
                 "externalId": datadog_group.externalId,
                 "members": [
                     {
-                        "value": getattr(member, 'value', None),
-                        "display": getattr(member, 'display', None),
-                        "$ref": getattr(member, 'ref', None)
+                        "value": member.value,
+                        "display": member.display,
+                        "$ref": member.ref
                     } for member in datadog_group.members
                 ]
             }
@@ -766,7 +683,7 @@ async def debug_group_state(group_id: int, db: Session = Depends(get_db)):
                 } for member in db_group.members
             ]
             
-            datadog_member_ids = [getattr(member, 'value', None) for member in datadog_group.members]
+            datadog_member_ids = [member.value for member in datadog_group.members if member.value]
             local_datadog_ids = [member.datadog_user_id for member in db_group.members if member.datadog_user_id]
             
             result["member_comparison"] = {
@@ -799,17 +716,7 @@ async def cleanup_remove_user_from_datadog_group(group_id: int, datadog_user_id:
         )
         
         if success:
-            action_logger.log_sync_operation(
-                operation_type="cleanup_remove_member",
-                entity_type="group",
-                entity_id=group_id,
-                datadog_id=db_group.datadog_group_id,
-                success=True,
-                sync_data={
-                    "removed_datadog_user_id": datadog_user_id,
-                    "context": "cleanup_orphaned_user"
-                }
-            )
+            logger.info(f"Successfully removed orphaned user {datadog_user_id} from group {group_id}")
             
             return SyncResponse(
                 success=True,
@@ -826,18 +733,7 @@ async def cleanup_remove_user_from_datadog_group(group_id: int, datadog_user_id:
     except Exception as e:
         logger.error(f"Failed to cleanup remove user {datadog_user_id} from group {group_id}: {e}")
         
-        action_logger.log_sync_operation(
-            operation_type="cleanup_remove_member",
-            entity_type="group",
-            entity_id=group_id,
-            datadog_id=db_group.datadog_group_id,
-            success=False,
-            error=str(e),
-            sync_data={
-                "datadog_user_id": datadog_user_id,
-                "context": "cleanup_orphaned_user"
-            }
-        )
+        logger.error(f"Failed to remove orphaned user {datadog_user_id} from group {group_id}: {e}")
         
         return SyncResponse(
             success=False,

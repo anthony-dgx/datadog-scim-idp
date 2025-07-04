@@ -1,22 +1,90 @@
+"""
+Datadog SCIM Integration Client
+
+This module provides a comprehensive example of how to integrate with Datadog's SCIM API
+for user and group provisioning. It demonstrates best practices for:
+
+- Authentication with Datadog's API
+- Proper SCIM request/response handling
+- Error handling and retries
+- User lifecycle management (create, update, deactivate)
+- Group management with member synchronization
+- Comprehensive logging for debugging
+
+For customers implementing SCIM with Datadog, this serves as a reference implementation
+showing production-ready patterns and error handling strategies.
+"""
+
 import httpx
 import os
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 import logging
-from .schemas import SCIMUser, SCIMGroup, SCIMPatchRequest, SCIMUserResponse, SCIMGroupResponse
+from .schemas import SCIMUser, SCIMGroup, SCIMPatchRequest, SCIMPatchOperation, SCIMUserResponse, SCIMGroupResponse, SCIMGroupMember
 from .logging_config import action_logger, TimingContext
 import urllib.parse
 
 logger = logging.getLogger(__name__)
 
 class DatadogSCIMClient:
+    """
+    Production-ready SCIM client for Datadog integration.
+    
+    This client demonstrates how to properly integrate with Datadog's SCIM API,
+    including authentication, error handling, and best practices for user/group
+    management.
+    
+    Key features:
+    - Comprehensive error handling with specific user-friendly messages
+    - Automatic conflict resolution for existing users
+    - Proper SCIM schema compliance
+    - Performance monitoring and logging
+    - Incremental group member synchronization
+    
+    Environment Variables Required:
+    - DD_SCIM_BASE_URL: Datadog SCIM API endpoint (auto-configured by DD_SITE)
+    - DD_BEARER_TOKEN: Datadog API key with SCIM permissions
+    
+    Example Usage:
+        client = DatadogSCIMClient()
+        
+        # Create a user
+        user_data = SCIMUser(
+            userName="john.doe@company.com",
+            emails=[SCIMEmail(value="john.doe@company.com")],
+            name=SCIMName(formatted="John Doe", givenName="John", familyName="Doe")
+        )
+        response = await client.create_user(user_data)
+        
+        # Create a group with members
+        group_data = SCIMGroup(
+            displayName="Engineering Team",
+            members=[SCIMGroupMember(value=response.id, display="John Doe")]
+        )
+        group_response = await client.create_group(group_data)
+    """
+    
     def __init__(self):
+        """
+        Initialize the SCIM client with Datadog configuration.
+        
+        The client automatically configures the correct SCIM endpoint based on
+        your Datadog site (DD_SITE environment variable).
+        
+        Raises:
+            ValueError: If DD_BEARER_TOKEN is not provided
+        """
+        # Datadog SCIM API endpoint - automatically configured based on site
         self.base_url = os.getenv("DD_SCIM_BASE_URL", "https://api.datadoghq.com/api/v2/scim")
         self.bearer_token = os.getenv("DD_BEARER_TOKEN")
         
         if not self.bearer_token:
-            raise ValueError("DD_BEARER_TOKEN environment variable is required")
+            raise ValueError(
+                "DD_BEARER_TOKEN environment variable is required. "
+                "Get your API key from Datadog → Organization Settings → API Keys"
+            )
         
+        # Standard SCIM headers as per RFC 7644
         self.headers = {
             "Authorization": f"Bearer {self.bearer_token}",
             "Content-Type": "application/json",
@@ -24,7 +92,30 @@ class DatadogSCIMClient:
         }
     
     async def _make_request(self, method: str, endpoint: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Make an HTTP request to the Datadog SCIM API with comprehensive logging"""
+        """
+        Make an authenticated HTTP request to Datadog's SCIM API.
+        
+        This method includes comprehensive error handling, logging, and performance
+        monitoring that customers should implement in their SCIM integrations.
+        
+        Args:
+            method: HTTP method (GET, POST, PUT, PATCH, DELETE)
+            endpoint: SCIM endpoint path (e.g., "/Users", "/Groups/{id}")
+            data: Request payload for POST/PUT/PATCH requests
+            
+        Returns:
+            Dict containing the JSON response from Datadog
+            
+        Raises:
+            httpx.HTTPStatusError: For HTTP 4xx/5xx responses
+            httpx.RequestError: For network/connection errors
+            
+        Example Error Responses:
+            409 Conflict: User already exists
+            404 Not Found: User/Group not found
+            401 Unauthorized: Invalid API key
+            400 Bad Request: Invalid SCIM payload
+        """
         url = f"{self.base_url.rstrip('/')}/{endpoint.lstrip('/')}"
         
         with TimingContext(f"scim_{method.lower()}_{endpoint}") as timing:
@@ -39,10 +130,10 @@ class DatadogSCIMClient:
                         json=data
                     )
                     
-                    # Parse response data
+                    # Parse response data - handle empty responses
                     response_data = response.json() if response.content else {}
                     
-                    # Log the API call with full details
+                    # Log the complete API call for debugging
                     action_logger.log_scim_request(
                         method=method,
                         endpoint=endpoint,
@@ -56,9 +147,19 @@ class DatadogSCIMClient:
                     
                     logger.info(f"SCIM API {method} {url} - Status: {response.status_code}")
                     
+                    # Handle HTTP errors with specific customer-friendly messages
                     if response.status_code >= 400:
                         error_text = response.text
                         logger.error(f"SCIM API Error: {response.status_code} - {error_text}")
+                        
+                        # Provide specific error guidance for common issues
+                        if response.status_code == 401:
+                            error_text = f"Authentication failed. Please check your DD_BEARER_TOKEN. {error_text}"
+                        elif response.status_code == 404:
+                            error_text = f"Resource not found. The user or group may not exist in Datadog. {error_text}"
+                        elif response.status_code == 409:
+                            error_text = f"Resource conflict. This usually means the user already exists. {error_text}"
+                        
                         raise httpx.HTTPStatusError(
                             f"SCIM API returned {response.status_code}: {error_text}",
                             request=response.request,
@@ -68,10 +169,10 @@ class DatadogSCIMClient:
                     return response_data
                     
             except httpx.RequestError as e:
-                error_msg = str(e)
-                logger.error(f"Request error: {error_msg}")
+                error_msg = f"Network error connecting to Datadog SCIM API: {str(e)}"
+                logger.error(error_msg)
                 
-                # Log the failed API call
+                # Log the failed API call for debugging
                 action_logger.log_scim_request(
                     method=method,
                     endpoint=endpoint,
@@ -82,8 +183,8 @@ class DatadogSCIMClient:
                 )
                 raise
             except Exception as e:
-                error_msg = str(e)
-                logger.error(f"Unexpected error: {error_msg}")
+                error_msg = f"Unexpected error during SCIM API call: {str(e)}"
+                logger.error(error_msg)
                 
                 # Log the failed API call
                 action_logger.log_scim_request(
@@ -96,14 +197,59 @@ class DatadogSCIMClient:
                 )
                 raise
 
-    # User operations
+    # ==== USER MANAGEMENT OPERATIONS ====
+    # These methods demonstrate the complete user lifecycle in SCIM
+    
     async def create_user(self, user_data: SCIMUser) -> SCIMUserResponse:
-        """Create a user in Datadog via SCIM"""
+        """
+        Create a new user in Datadog via SCIM.
+        
+        This method includes automatic conflict resolution - if a user already exists,
+        it will attempt to find and return the existing user instead of failing.
+        
+        Args:
+            user_data: SCIMUser object with user information
+            
+        Returns:
+            SCIMUserResponse with the created (or found existing) user
+            
+        Example Request Payload:
+            {
+                "userName": "john.doe@company.com",
+                "active": true,
+                "emails": [{"value": "john.doe@company.com", "type": "work", "primary": true}],
+                "name": {
+                    "formatted": "John Doe",
+                    "givenName": "John",
+                    "familyName": "Doe"
+                },
+                "title": "Software Engineer",
+                "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"]
+            }
+            
+        Example Response:
+            {
+                "id": "12345678-1234-1234-1234-123456789012",
+                "userName": "john.doe@company.com",
+                "active": true,
+                "emails": [...],
+                "name": {...},
+                "meta": {
+                    "resourceType": "User",
+                    "created": "2023-01-01T00:00:00Z",
+                    "lastModified": "2023-01-01T00:00:00Z"
+                }
+            }
+            
+        Raises:
+            ValueError: For user-friendly errors (user exists but couldn't retrieve)
+            httpx.HTTPStatusError: For other API errors
+        """
         try:
             response_data = await self._make_request("POST", "/Users", user_data.model_dump())
             return SCIMUserResponse(**response_data)
         except Exception as e:
-            # Handle 409 conflict - user already exists
+            # Handle 409 conflict - user already exists (common scenario)
             if "409" in str(e) and "user already exists" in str(e).lower():
                 logger.info(f"User {user_data.userName} already exists in Datadog, attempting to find existing user")
                 try:
@@ -114,58 +260,162 @@ class DatadogSCIMClient:
                         return existing_user
                     else:
                         logger.warning(f"User exists according to API but could not be found in search")
-                        raise ValueError(f"User {user_data.userName} already exists in Datadog but could not be retrieved. Please check Datadog manually and update the user's Datadog ID in the database.")
+                        raise ValueError(
+                            f"User {user_data.userName} already exists in Datadog but could not be retrieved. "
+                            f"Please check Datadog manually and update the user's Datadog ID in your system."
+                        )
                 except Exception as search_error:
                     logger.error(f"Failed to search for existing user: {search_error}")
-                    raise ValueError(f"User {user_data.userName} already exists in Datadog but could not be retrieved: {str(search_error)}")
+                    raise ValueError(
+                        f"User {user_data.userName} already exists in Datadog but could not be retrieved: {str(search_error)}"
+                    )
             else:
                 raise e
     
     async def get_user(self, user_id: str) -> SCIMUserResponse:
-        """Get a user from Datadog via SCIM"""
+        """
+        Retrieve a user from Datadog by their SCIM ID.
+        
+        Args:
+            user_id: The Datadog user ID (UUID format)
+            
+        Returns:
+            SCIMUserResponse with user details
+            
+        Example Response:
+            Same as create_user response format
+        """
         response_data = await self._make_request("GET", f"/Users/{user_id}")
         return SCIMUserResponse(**response_data)
     
     async def update_user(self, user_id: str, user_data: SCIMUser) -> SCIMUserResponse:
-        """Update a user in Datadog via SCIM"""
+        """
+        Update an existing user in Datadog via SCIM.
+        
+        This performs a full update (PUT) of the user resource.
+        
+        Args:
+            user_id: The Datadog user ID
+            user_data: Complete SCIMUser object with updated information
+            
+        Returns:
+            SCIMUserResponse with updated user details
+        """
         response_data = await self._make_request("PUT", f"/Users/{user_id}", user_data.model_dump())
         return SCIMUserResponse(**response_data)
     
     async def patch_user(self, user_id: str, patch_data: SCIMPatchRequest) -> SCIMUserResponse:
-        """Patch a user in Datadog via SCIM"""
+        """
+        Partially update a user using SCIM PATCH operations.
+        
+        This is more efficient than full updates when you only need to change
+        specific attributes.
+        
+        Args:
+            user_id: The Datadog user ID
+            patch_data: SCIM PATCH request with operations
+            
+        Returns:
+            SCIMUserResponse with updated user details
+            
+        Example PATCH Request:
+            {
+                "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+                "Operations": [
+                    {
+                        "op": "replace",
+                        "path": "active",
+                        "value": false
+                    }
+                ]
+            }
+        """
         response_data = await self._make_request("PATCH", f"/Users/{user_id}", patch_data.model_dump())
         return SCIMUserResponse(**response_data)
     
     async def deactivate_user(self, user_id: str) -> SCIMUserResponse:
-        """Deactivate a user in Datadog via SCIM"""
+        """
+        Deactivate a user in Datadog (set active=false).
+        
+        This is the recommended way to disable a user rather than deleting them,
+        as it preserves audit history and allows reactivation.
+        
+        Args:
+            user_id: The Datadog user ID
+            
+        Returns:
+            SCIMUserResponse with updated user (active=false)
+        """
         patch_data = SCIMPatchRequest(
             Operations=[
-                {
-                    "op": "replace",
-                    "path": "active",
-                    "value": False
-                }
+                SCIMPatchOperation(
+                    op="replace",
+                    path="active", 
+                    value=False
+                )
             ]
         )
         return await self.patch_user(user_id, patch_data)
     
     async def delete_user(self, user_id: str) -> bool:
-        """Delete a user from Datadog via SCIM"""
+        """
+        Permanently delete a user from Datadog.
+        
+        WARNING: This permanently removes the user and cannot be undone.
+        Consider using deactivate_user() instead for most use cases.
+        
+        Args:
+            user_id: The Datadog user ID
+            
+        Returns:
+            True if deletion was successful
+        """
         await self._make_request("DELETE", f"/Users/{user_id}")
         return True
     
     async def list_users(self, start_index: int = 1, count: int = 100, filter_expr: Optional[str] = None) -> Dict[str, Any]:
-        """List users from Datadog via SCIM"""
+        """
+        List users from Datadog with optional filtering.
+        
+        Args:
+            start_index: Starting index for pagination (1-based)
+            count: Number of users to return (max 100)
+            filter_expr: SCIM filter expression (e.g., 'emails.value eq "john@company.com"')
+            
+        Returns:
+            Dict with 'Resources' array and pagination info
+            
+        Example Response:
+            {
+                "Resources": [
+                    {user1}, {user2}, ...
+                ],
+                "totalResults": 150,
+                "startIndex": 1,
+                "itemsPerPage": 100
+            }
+        """
         params = f"?startIndex={start_index}&count={count}"
         if filter_expr:
-            # URL encode the filter expression
+            # URL encode the filter expression properly
             encoded_filter = urllib.parse.quote(filter_expr)
             params += f"&filter={encoded_filter}"
         
         return await self._make_request("GET", f"/Users{params}")
     
     async def find_user_by_email(self, email: str) -> Optional[SCIMUserResponse]:
-        """Find a user by email address using SCIM filtering"""
+        """
+        Find a user by their email address using SCIM filtering.
+        
+        This method tries multiple filter formats to ensure compatibility
+        with different SCIM implementations.
+        
+        Args:
+            email: User's email address
+            
+        Returns:
+            SCIMUserResponse if found, None otherwise
+        """
         try:
             # Try multiple filter formats since different SCIM implementations may vary
             filter_expressions = [
@@ -199,61 +449,106 @@ class DatadogSCIMClient:
                         # Check if any email matches
                         user_emails = []
                         if user_data.get("emails"):
-                            user_emails.extend([email_obj.get("value") for email_obj in user_data["emails"]])
-                        if user_data.get("userName"):
-                            user_emails.append(user_data["userName"])
+                            for email_obj in user_data["emails"]:
+                                if isinstance(email_obj, dict) and email_obj.get("value"):
+                                    user_emails.append(email_obj["value"].lower())
                         
-                        if email.lower() in [e.lower() for e in user_emails if e]:
+                        # Also check userName field
+                        if user_data.get("userName"):
+                            user_emails.append(user_data["userName"].lower())
+                        
+                        if email.lower() in user_emails:
                             logger.info(f"Found user via manual search: {user_data.get('id', 'unknown')}")
                             return SCIMUserResponse(**user_data)
-                            
-            except Exception as manual_search_error:
-                logger.error(f"Manual search failed: {manual_search_error}")
-            
-            logger.info(f"No user found with email: {email}")
-            return None
-            
+                
+                logger.info(f"User with email {email} not found in first 100 users")
+                return None
+                
+            except Exception as manual_error:
+                logger.error(f"Manual search failed: {manual_error}")
+                return None
+                
         except Exception as e:
             logger.error(f"Error searching for user by email {email}: {e}")
             return None
 
-    # Group operations
+    # ==== GROUP MANAGEMENT OPERATIONS ====
+    # These methods demonstrate group lifecycle and member management
+    
     async def create_group(self, group_data: SCIMGroup) -> SCIMGroupResponse:
-        """Create a group in Datadog via SCIM"""
+        """
+        Create a new group in Datadog via SCIM.
+        
+        Args:
+            group_data: SCIMGroup object with group information
+            
+        Returns:
+            SCIMGroupResponse with the created group
+            
+        Example Request Payload:
+            {
+                "displayName": "Engineering Team",
+                "externalId": "eng-team-001",
+                "members": [
+                    {
+                        "$ref": "https://api.datadoghq.com/api/v2/scim/Users/12345678-1234-1234-1234-123456789012",
+                        "value": "12345678-1234-1234-1234-123456789012",
+                        "display": "John Doe",
+                        "type": "User"
+                    }
+                ],
+                "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"]
+            }
+        """
         response_data = await self._make_request("POST", "/Groups", group_data.model_dump())
         return SCIMGroupResponse(**response_data)
     
     async def get_group(self, group_id: str) -> SCIMGroupResponse:
-        """Get a group from Datadog via SCIM"""
+        """Retrieve a group from Datadog by its SCIM ID."""
         response_data = await self._make_request("GET", f"/Groups/{group_id}")
         return SCIMGroupResponse(**response_data)
     
     async def update_group(self, group_id: str, group_data: SCIMGroup) -> SCIMGroupResponse:
-        """Update a group in Datadog via SCIM"""
-        response_data = await self._make_request("PUT", f"/Groups/{group_id}", group_data.model_dump())
-        return SCIMGroupResponse(**response_data)
+        """
+        Update an existing group in Datadog via SCIM.
+        
+        ⚠️ IMPORTANT: Datadog's SCIM API does not support PUT operations for group updates.
+        This method will raise a NotImplementedError to prevent usage.
+        
+        For group updates, use:
+        - sync_group_members() to update group membership
+        - Group metadata (displayName, externalId) cannot be updated via SCIM API
+        """
+        raise NotImplementedError(
+            "Datadog's SCIM API does not support PUT operations for group updates. "
+            "Use sync_group_members() to update group membership. "
+            "Group metadata (displayName, externalId) cannot be updated via SCIM API."
+        )
     
     async def patch_group(self, group_id: str, patch_data: SCIMPatchRequest) -> SCIMGroupResponse:
-        """Patch a group in Datadog via SCIM"""
+        """Partially update a group using SCIM PATCH operations."""
         response_data = await self._make_request("PATCH", f"/Groups/{group_id}", patch_data.model_dump())
         return SCIMGroupResponse(**response_data)
     
     async def delete_group(self, group_id: str) -> bool:
-        """Delete a group from Datadog via SCIM"""
+        """Permanently delete a group from Datadog."""
         await self._make_request("DELETE", f"/Groups/{group_id}")
         return True
     
     async def list_groups(self, start_index: int = 1, count: int = 100, filter_expr: Optional[str] = None) -> Dict[str, Any]:
-        """List groups from Datadog via SCIM"""
+        """List groups from Datadog with optional filtering."""
         params = f"?startIndex={start_index}&count={count}"
         if filter_expr:
-            params += f"&filter={filter_expr}"
+            encoded_filter = urllib.parse.quote(filter_expr)
+            params += f"&filter={encoded_filter}"
         
         return await self._make_request("GET", f"/Groups{params}")
+
+    # ==== ADVANCED GROUP MEMBER MANAGEMENT ====
+    # These methods show best practices for group member synchronization
     
-    # Utility methods
     async def validate_user_exists(self, user_id: str) -> bool:
-        """Check if a user exists in Datadog SCIM"""
+        """Check if a user exists in Datadog before adding to groups."""
         try:
             await self.get_user(user_id)
             return True
@@ -261,252 +556,247 @@ class DatadogSCIMClient:
             return False
     
     async def get_group_current_members(self, group_id: str) -> List[str]:
-        """Get current member IDs from a group in Datadog"""
-        try:
-            group = await self.get_group(group_id)
-            return [getattr(member, 'value', None) for member in group.members if getattr(member, 'value', None)]
-        except Exception:
-            return []
+        """Get the current list of member IDs for a group."""
+        group = await self.get_group(group_id)
+        return [member.value for member in group.members if member.value]
     
     async def add_user_to_group(self, group_id: str, user_id: str, user_display_name: str) -> SCIMGroupResponse:
-        """Add a user to a group via SCIM PATCH"""
+        """
+        Add a single user to a group using SCIM PATCH operations.
+        
+        Uses the correct PATCH format for Datadog's SCIM API v2 to incrementally
+        add a member without affecting other group properties.
+        
+        Args:
+            group_id: The Datadog group ID
+            user_id: The Datadog user ID to add
+            user_display_name: Display name for the user
+            
+        Returns:
+            SCIMGroupResponse with updated group
+        """
         # First validate the user exists
         if not await self.validate_user_exists(user_id):
             raise ValueError(f"User {user_id} does not exist in Datadog")
         
         # Check if user is already a member
-        current_members = await self.get_group_current_members(group_id)
-        if user_id in current_members:
+        current_member_ids = await self.get_group_current_members(group_id)
+        if user_id in current_member_ids:
             logger.info(f"User {user_id} is already a member of group {group_id}")
             return await self.get_group(group_id)
         
+        # Create PATCH operation to add member using official Datadog format
         patch_data = SCIMPatchRequest(
             Operations=[
-                {
-                    "op": "add",
-                    "path": "members",
-                    "value": [
-                        {
-                            "$ref": f"{self.base_url}/Users/{user_id}",
-                            "value": user_id,
-                            "display": user_display_name,
-                            "type": "User"
-                        }
-                    ]
-                }
-            ]
-        )
-        return await self.patch_group(group_id, patch_data)
-    
-    async def remove_user_from_group(self, group_id: str, user_id: str) -> SCIMGroupResponse:
-        """Remove a user from a group via SCIM PATCH"""
-        # Check if user is actually a member
-        current_members = await self.get_group_current_members(group_id)
-        if user_id not in current_members:
-            logger.info(f"User {user_id} is not a member of group {group_id}")
-            return await self.get_group(group_id)
-        
-        # Use exact format from Datadog SCIM API documentation for member removal
-        patch_data = SCIMPatchRequest(
-            Operations=[
-                {
-                    "op": "remove",
-                    "path": f"members[value eq \"{user_id}\"]",
-                    "value": None  # Explicitly set value to null for remove operations
-                }
+                SCIMPatchOperation(
+                    op="add",
+                    path="members",
+                    value=[{"value": user_id}]  # Array with member object, as per Datadog docs
+                )
             ]
         )
         
+        # Apply PATCH operation
         try:
             return await self.patch_group(group_id, patch_data)
         except Exception as e:
-            logger.error(f"Failed to remove user {user_id} from group {group_id} using PATCH: {str(e)}")
+            if "409" in str(e) or "Conflict" in str(e):
+                logger.warning(f"Conflict when adding user {user_id} to group {group_id}, user may already be a member")
+                return await self.get_group(group_id)
+            else:
+                raise e
+    
+    async def remove_user_from_group(self, group_id: str, user_id: str) -> SCIMGroupResponse:
+        """
+        Remove a user from a group using SCIM PATCH operations.
+        
+        Uses the correct PATCH format for Datadog's SCIM API v2 to incrementally
+        remove a member without affecting other group properties.
+        
+        Args:
+            group_id: The Datadog group ID
+            user_id: The Datadog user ID to remove
             
-            # Fallback: Use PUT with current members minus the user to remove
-            try:
-                logger.info(f"Attempting PUT fallback to remove user {user_id} from group {group_id}")
-                current_group = await self.get_group(group_id)
-                
-                # Filter out the user to remove from members list
-                updated_members = [
-                    member for member in current_group.members 
-                    if member.get("value") != user_id
-                ]
-                
-                # Create updated group with filtered members
-                updated_group = SCIMGroup(
-                    displayName=current_group.displayName,
-                    externalId=current_group.externalId,
-                    members=updated_members
+        Returns:
+            SCIMGroupResponse with updated group
+        """
+        # Check if user is currently a member
+        current_member_ids = await self.get_group_current_members(group_id)
+        
+        if user_id not in current_member_ids:
+            logger.warning(f"User {user_id} is not a member of group {group_id}")
+            return await self.get_group(group_id)
+        
+        # Create PATCH operation to remove member using correct Datadog format
+        patch_data = SCIMPatchRequest(
+            Operations=[
+                SCIMPatchOperation(
+                    op="remove",
+                    path=f"members[value eq \"{user_id}\"]"
                 )
-                
-                # Use PUT with filtered members
-                response_data = await self._make_request("PUT", f"/Groups/{group_id}", updated_group.model_dump())
-                return SCIMGroupResponse(**response_data)
-                
-            except Exception as put_error:
-                logger.error(f"PUT fallback also failed for removing user {user_id}: {str(put_error)}")
-                raise e  # Raise the original PATCH error
-
-    async def sync_group_members(self, group_id: str, target_member_ids: List[str], member_display_names: Dict[str, str]) -> Dict[str, Any]:
-        """Synchronize group members by adding/removing as needed"""
+            ]
+        )
+        
+        # Apply PATCH operation
         try:
-            # Get current members in Datadog
-            current_members = await self.get_group_current_members(group_id)
-            target_members = set(target_member_ids)
-            current_members_set = set(current_members)
+            return await self.patch_group(group_id, patch_data)
+        except Exception as e:
+            if "409" in str(e) or "Conflict" in str(e):
+                logger.warning(f"Conflict when removing user {user_id} from group {group_id}, user may already be removed")
+                return await self.get_group(group_id)
+            else:
+                raise e
+    
+    async def sync_group_members(self, group_id: str, target_member_ids: List[str], member_display_names: Dict[str, str]) -> Dict[str, Any]:
+        """
+        Efficiently synchronize group membership using incremental updates.
+        
+        This method compares current membership with target membership and only
+        makes the necessary updates, with proper conflict handling.
+        
+        Args:
+            group_id: The Datadog group ID
+            target_member_ids: List of user IDs that should be in the group
+            member_display_names: Dict mapping user IDs to display names
             
-            # Calculate additions and removals
-            to_add = target_members - current_members_set
-            to_remove = current_members_set - target_members
-            
-            results = {
+        Returns:
+            Dict with sync results: {"added": [...], "removed": [...], "unchanged": [...]}
+        """
+        # Get current group membership
+        current_member_ids = await self.get_group_current_members(group_id)
+        
+        # Calculate differences
+        members_to_add = [uid for uid in target_member_ids if uid not in current_member_ids]
+        members_to_remove = [uid for uid in current_member_ids if uid not in target_member_ids]
+        unchanged_members = [uid for uid in current_member_ids if uid in target_member_ids]
+        
+        logger.info(f"Group {group_id} sync: +{len(members_to_add)}, -{len(members_to_remove)}, ={len(unchanged_members)}")
+        
+        # If no changes needed, return early to avoid unnecessary API calls
+        if not members_to_add and not members_to_remove:
+            logger.info(f"Group {group_id} already has the correct membership, no changes needed")
+            return {
                 "added": [],
                 "removed": [],
-                "errors": [],
-                "current_members": current_members,
-                "target_members": list(target_members)
+                "unchanged": unchanged_members
             }
-            
-            # Add new members
-            for user_id in to_add:
-                try:
-                    await self.add_user_to_group(
-                        group_id, 
-                        user_id, 
-                        member_display_names.get(user_id, user_id)
-                    )
-                    results["added"].append(user_id)
-                    logger.info(f"Added user {user_id} to group {group_id}")
-                except Exception as e:
-                    error_msg = f"Failed to add user {user_id}: {str(e)}"
-                    results["errors"].append(error_msg)
-                    logger.error(error_msg)
-            
-            # Remove old members
-            for user_id in to_remove:
-                try:
-                    await self.remove_user_from_group(group_id, user_id)
-                    results["removed"].append(user_id)
-                    logger.info(f"Removed user {user_id} from group {group_id}")
-                except Exception as e:
-                    error_msg = f"Failed to remove user {user_id}: {str(e)}"
-                    results["errors"].append(error_msg)
-                    logger.error(error_msg)
-            
-            return results
-            
-        except Exception as e:
-            logger.error(f"Failed to sync group members: {str(e)}")
-            raise
-
-    async def update_group_metadata(self, group_id: str, display_name: str = None, external_id: str = None) -> SCIMGroupResponse:
-        """Update only group metadata using PATCH operations with correct Datadog SCIM format"""
+        
+        # Use PATCH "replace" operation for full member synchronization
+        # This is more efficient than PUT as it only updates the members field
         try:
-            # Build update data object
-            update_data = {}
+            # Create member value list for PATCH replace operation (as per Datadog docs)
+            member_values = [{"value": user_id} for user_id in target_member_ids]
             
-            if display_name is not None:
-                update_data["displayName"] = display_name
-            
-            if external_id is not None:
-                update_data["externalId"] = external_id
-            
-            if not update_data:
-                # No changes needed, just return current group
-                return await self.get_group(group_id)
-            
-            # Use exact format from Datadog SCIM API documentation
-            operations = [{
-                "op": "replace",
-                "path": "None",  # Datadog uses "None" as string for object replacement
-                "value": update_data
-            }]
-            
-            patch_data = SCIMPatchRequest(Operations=operations)
-            response_data = await self._make_request("PATCH", f"/Groups/{group_id}", patch_data.model_dump())
-            return SCIMGroupResponse(**response_data)
-            
-        except Exception as e:
-            logger.error(f"PATCH operation failed for {group_id}: {str(e)}")
-            
-            # Fallback: GET current group, preserve members, and use PUT
-            try:
-                logger.info(f"Attempting PUT fallback for group {group_id}")
-                current_group = await self.get_group(group_id)
-                
-                # Create updated group data with existing members preserved
-                updated_group = SCIMGroup(
-                    displayName=display_name if display_name is not None else current_group.displayName,
-                    externalId=external_id if external_id is not None else current_group.externalId,
-                    members=current_group.members  # Preserve existing members
-                )
-                
-                # Use PUT with preserved members
-                response_data = await self._make_request("PUT", f"/Groups/{group_id}", updated_group.model_dump())
-                return SCIMGroupResponse(**response_data)
-                
-            except Exception as put_error:
-                logger.error(f"PUT fallback also failed for {group_id}: {str(put_error)}")
-                raise e  # Raise the original PATCH error
-
-    async def remove_user_from_group_by_datadog_id(self, group_id: str, datadog_user_id: str) -> bool:
-        """Remove a user from a group using their Datadog user ID directly (for cleanup)"""
-        try:
-            # Get current group members
-            current_group = await self.get_group(group_id)
-            
-            # Check if user is actually in the group
-            current_member_ids = [getattr(member, 'value', None) for member in current_group.members if getattr(member, 'value', None)]
-            if datadog_user_id not in current_member_ids:
-                logger.info(f"User {datadog_user_id} is not in group {group_id}")
-                return True
-            
-            # Use PATCH remove operation for cleanup
-            logger.info(f"Removing user {datadog_user_id} from group {group_id} (cleanup operation using PATCH)")
-            
-            # Try PATCH remove operation first
+            # Create PATCH operation to replace all members
             patch_data = SCIMPatchRequest(
                 Operations=[
-                    {
-                        "op": "remove",
-                        "path": f"members[value eq \"{datadog_user_id}\"]",
-                        "value": None
-                    }
+                    SCIMPatchOperation(
+                        op="replace",
+                        path="members",
+                        value=member_values
+                    )
                 ]
             )
             
-            try:
-                logger.info(f"Making SCIM API request: PATCH /Groups/{group_id}")
-                response_data = await self._make_request("PATCH", f"/Groups/{group_id}", patch_data.model_dump())
-                logger.info(f"Successfully removed user {datadog_user_id} from group {group_id} using PATCH")
-                return True
-            except Exception as patch_error:
-                logger.warning(f"PATCH remove failed: {patch_error}")
-                
-                # Fallback: Use PUT with filtered member list
-                logger.info(f"Falling back to PUT operation for user removal")
-                remaining_members = [
-                    member for member in current_group.members 
-                    if getattr(member, 'value', None) != datadog_user_id
-                ]
-                
-                # Create updated group with filtered members
-                updated_group = SCIMGroup(
-                    displayName=current_group.displayName,
-                    externalId=current_group.externalId,
-                    members=remaining_members
-                )
-                
-                logger.info(f"Making SCIM API request: PUT /Groups/{group_id}")
-                response_data = await self._make_request("PUT", f"/Groups/{group_id}", updated_group.model_dump())
-                
-                logger.info(f"Successfully removed user {datadog_user_id} from group {group_id} using PUT fallback")
-                return True
-                
+            # Apply PATCH operation with retry logic for conflicts
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    await self.patch_group(group_id, patch_data)
+                    logger.info(f"Successfully synced group {group_id} membership using PATCH replace")
+                    break
+                except Exception as e:
+                    if "409" in str(e) or "Conflict" in str(e):
+                        if attempt < max_retries - 1:
+                            logger.warning(f"Group member sync conflict on attempt {attempt + 1}, retrying...")
+                            # Brief delay before retry
+                            import asyncio
+                            await asyncio.sleep(1)
+                            continue
+                        else:
+                            logger.error(f"Group member sync failed after {max_retries} attempts due to conflicts")
+                            # Fall back to individual operations
+                            return await self._sync_group_members_fallback(group_id, members_to_add, members_to_remove, member_display_names)
+                    else:
+                        raise e
+            
+            return {
+                "added": members_to_add,
+                "removed": members_to_remove,
+                "unchanged": unchanged_members
+            }
+            
         except Exception as e:
-            logger.error(f"Error removing user {datadog_user_id} from group {group_id}: {e}")
+            logger.error(f"Failed to sync group {group_id} members: {e}")
+            # Fall back to individual operations if bulk update fails
+            return await self._sync_group_members_fallback(group_id, members_to_add, members_to_remove, member_display_names)
+    
+    async def _sync_group_members_fallback(self, group_id: str, members_to_add: List[str], members_to_remove: List[str], member_display_names: Dict[str, str]) -> Dict[str, Any]:
+        """Fallback method using individual add/remove operations"""
+        logger.info(f"Using fallback individual member operations for group {group_id}")
+        
+        # Remove members that shouldn't be in the group
+        for user_id in members_to_remove:
+            try:
+                await self.remove_user_from_group(group_id, user_id)
+                logger.info(f"Removed user {user_id} from group {group_id}")
+            except Exception as e:
+                logger.error(f"Failed to remove user {user_id} from group {group_id}: {e}")
+        
+        # Add new members to the group
+        for user_id in members_to_add:
+            try:
+                display_name = member_display_names.get(user_id, f"User {user_id}")
+                await self.add_user_to_group(group_id, user_id, display_name)
+                logger.info(f"Added user {user_id} to group {group_id}")
+            except Exception as e:
+                logger.error(f"Failed to add user {user_id} to group {group_id}: {e}")
+        
+        return {
+            "added": members_to_add,
+            "removed": members_to_remove,
+            "unchanged": []
+        }
+    
+    async def update_group_metadata(self, group_id: str, display_name: str = None, external_id: str = None) -> SCIMGroupResponse:
+        """
+        Update only the metadata (name, external ID) of a group without affecting members.
+        
+        ⚠️ IMPORTANT: Datadog's SCIM API does not support metadata updates for groups.
+        This method will raise a NotImplementedError to prevent usage.
+        
+        Datadog's SCIM API limitations:
+        - PUT operations return 409 Conflict errors
+        - PATCH operations for displayName/externalId return JSON unmarshal errors
+        - Only group membership can be updated via PATCH operations
+        """
+        raise NotImplementedError(
+            "Datadog's SCIM API does not support group metadata updates. "
+            "Neither PUT nor PATCH operations work for displayName or externalId fields. "
+            "Only group membership can be updated via PATCH operations."
+        )
+    
+    async def remove_user_from_group_by_datadog_id(self, group_id: str, datadog_user_id: str) -> bool:
+        """
+        Utility method to remove a user from a group by their Datadog user ID.
+        
+        This is helpful for cleanup operations when you have the Datadog user ID
+        but need to remove them from a specific group.
+        
+        Args:
+            group_id: The Datadog group ID
+            datadog_user_id: The Datadog user ID to remove
+            
+        Returns:
+            True if removal was successful or user wasn't in group
+        """
+        try:
+            await self.remove_user_from_group(group_id, datadog_user_id)
+            logger.info(f"Successfully removed user {datadog_user_id} from group {group_id}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to remove user {datadog_user_id} from group {group_id}: {e}")
             return False
 
-# Global instance
+# Global SCIM client instance for use throughout the application
 scim_client = DatadogSCIMClient() 

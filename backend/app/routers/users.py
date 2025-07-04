@@ -196,13 +196,7 @@ async def sync_user_to_datadog(user_id: int, db: Session = Depends(get_db)):
     """Sync a user to Datadog via SCIM"""
     db_user = db.query(User).filter(User.id == user_id).first()
     if not db_user:
-        action_logger.log_sync_operation(
-            operation_type="sync",
-            entity_type="user",
-            entity_id=user_id,
-            success=False,
-            error="User not found"
-        )
+        logger.error(f"User {user_id} not found for sync")
         raise HTTPException(status_code=404, detail="User not found")
     
     try:
@@ -276,24 +270,11 @@ async def sync_deactivate_user(user_id: int, db: Session = Depends(get_db)):
     """Deactivate a user in Datadog via SCIM"""
     db_user = db.query(User).filter(User.id == user_id).first()
     if not db_user:
-        action_logger.log_sync_operation(
-            operation_type="deactivate",
-            entity_type="user",
-            entity_id=user_id,
-            success=False,
-            error="User not found"
-        )
+        logger.error(f"User {user_id} not found for deactivation")
         raise HTTPException(status_code=404, detail="User not found")
     
     if not db_user.datadog_user_id:
-        action_logger.log_sync_operation(
-            operation_type="deactivate",
-            entity_type="user",
-            entity_id=user_id,
-            datadog_id=db_user.datadog_user_id,
-            success=False,
-            error="User not synced to Datadog yet"
-        )
+        logger.error(f"User {user_id} not synced to Datadog yet")
         raise HTTPException(status_code=400, detail="User not synced to Datadog yet")
     
     try:
@@ -309,17 +290,7 @@ async def sync_deactivate_user(user_id: int, db: Session = Depends(get_db)):
         db.commit()
         
         # Log successful deactivation
-        action_logger.log_sync_operation(
-            operation_type="deactivate",
-            entity_type="user",
-            entity_id=user_id,
-            datadog_id=db_user.datadog_user_id,
-            success=True,
-            sync_data={
-                "local_user": db_user.to_dict(),
-                "action": "deactivated_both_datadog_and_local"
-            }
-        )
+        logger.info(f"Successfully deactivated user {db_user.username} in Datadog and locally")
         
         return SyncResponse(
             success=True,
@@ -337,19 +308,7 @@ async def sync_deactivate_user(user_id: int, db: Session = Depends(get_db)):
         db.commit()
         
         # Log partial failure
-        action_logger.log_sync_operation(
-            operation_type="deactivate",
-            entity_type="user",
-            entity_id=user_id,
-            datadog_id=db_user.datadog_user_id,
-            success=False,
-            error=str(e),
-            sync_data={
-                "local_user": db_user.to_dict(),
-                "action": "deactivated_locally_only",
-                "datadog_error": str(e)
-            }
-        )
+        logger.error(f"Failed to deactivate user {user_id} in Datadog: {e}")
         
         return SyncResponse(
             success=False,
