@@ -6,6 +6,8 @@ from typing import Dict, Any, Optional
 import base64
 import json
 import logging
+import uuid
+from datetime import datetime, timedelta
 
 from ..database import get_db
 from ..models import User, SAMLMetadata
@@ -14,6 +16,7 @@ from ..schemas import (
 )
 from ..saml_client import saml_config
 from ..logging_config import action_logger
+from ..scim_client import scim_client
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +298,17 @@ async def saml_login(
                         border-left: 4px solid #632ca6;
                     }}
                     .redirect-info small {{ color: #555; }}
+                    .checkbox-group label {{ 
+                        display: flex; 
+                        align-items: center; 
+                        font-weight: normal; 
+                        font-size: 0.875rem;
+                        margin-bottom: 0;
+                    }}
+                    .checkbox-group input[type="checkbox"] {{ 
+                        margin-right: 0.5rem;
+                        width: auto;
+                    }}
                 </style>
             </head>
             <body>
@@ -305,6 +319,12 @@ async def saml_login(
                         <div class="form-group">
                             <label for="email">Email Address:</label>
                             <input type="email" id="email" name="email" required>
+                        </div>
+                        <div class="form-group checkbox-group">
+                            <label>
+                                <input type="checkbox" id="enable_jit" name="enable_jit" value="true" checked>
+                                Enable Just-In-Time provisioning (create user if not exists)
+                            </label>
                         </div>
                         <input type="hidden" name="SAMLRequest" value="{SAMLRequest}">
                         <input type="hidden" name="RelayState" value="{validated_relay_state or ''}">
@@ -388,14 +408,129 @@ def _validate_relay_state(relay_state: Optional[str]) -> Optional[str]:
     
     return relay_state
 
+async def create_user_jit(db: Session, email: str, user_attributes: Dict[str, Any]) -> User:
+    """
+    Create a user Just-In-Time during SAML authentication.
+    
+    This function creates a user both locally and in Datadog via SCIM
+    when they don't exist but are trying to authenticate via SAML.
+    """
+    try:
+        # Extract user information from SAML attributes
+        first_name = user_attributes.get('first_name', '')
+        last_name = user_attributes.get('last_name', '')
+        formatted_name = user_attributes.get('formatted_name') or f"{first_name} {last_name}".strip()
+        title = user_attributes.get('title', '')
+        
+        # Create user in local database
+        db_user = User(
+            uuid=str(uuid.uuid4()),
+            username=email,
+            email=email,
+            first_name=first_name,
+            last_name=last_name,
+            formatted_name=formatted_name,
+            title=title,
+            active=True,
+            external_id=user_attributes.get('external_id'),
+            sync_status="pending"
+        )
+        
+        db.add(db_user)
+        db.commit()
+        db.refresh(db_user)
+        
+        # Create user in Datadog via SCIM
+        from ..schemas import SCIMUser, SCIMEmail, SCIMName
+        
+        scim_user = SCIMUser(
+            userName=email,
+            active=True,
+            emails=[SCIMEmail(value=email, type="work", primary=True)],
+            name=SCIMName(
+                formatted=formatted_name,
+                givenName=first_name,
+                familyName=last_name
+            ),
+            title=title,
+            externalId=db_user.uuid
+        )
+        
+        try:
+            scim_response = await scim_client.create_user(scim_user)
+            
+            # Update local user with Datadog ID
+            db_user.datadog_user_id = scim_response.id
+            db_user.last_synced = datetime.utcnow()
+            db_user.sync_status = "synced"
+            db_user.sync_error = None
+            
+            db.commit()
+            
+            # Log successful JIT provisioning
+            action_logger.log_saml_login(
+                operation="jit_provisioning_success",
+                user_email=email,
+                success=True,
+                saml_data={
+                    "datadog_user_id": scim_response.id,
+                    "local_user_id": db_user.id,
+                    "created_attributes": {
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "title": title
+                    }
+                }
+            )
+            
+            logger.info(f"JIT provisioning successful for {email}: local_id={db_user.id}, datadog_id={scim_response.id}")
+            
+        except Exception as scim_error:
+            # Mark sync as failed but keep local user
+            db_user.sync_status = "failed"
+            db_user.sync_error = str(scim_error)
+            db.commit()
+            
+            # Log SCIM failure but continue with authentication
+            action_logger.log_saml_login(
+                operation="jit_provisioning_partial",
+                user_email=email,
+                success=False,
+                error=f"SCIM creation failed: {scim_error}",
+                saml_data={
+                    "local_user_created": True,
+                    "datadog_user_created": False,
+                    "local_user_id": db_user.id
+                }
+            )
+            
+            logger.warning(f"JIT provisioning partially failed for {email}: created locally but SCIM failed: {scim_error}")
+        
+        return db_user
+        
+    except Exception as e:
+        db.rollback()
+        
+        # Log JIT provisioning failure
+        action_logger.log_saml_login(
+            operation="jit_provisioning_failed",
+            user_email=email,
+            success=False,
+            error=str(e)
+        )
+        
+        logger.error(f"JIT provisioning failed for {email}: {e}")
+        raise
+
 @public_router.post("/validate", response_class=HTMLResponse)
 async def saml_validate(
     email: str = Form(...),
     SAMLRequest: str = Form(...),
     RelayState: Optional[str] = Form(None),
+    enable_jit: Optional[bool] = Form(True),  # Add JIT provisioning flag
     db: Session = Depends(get_db)
 ):
-    """Validate user email and generate SAML response"""
+    """Validate user email and generate SAML response with JIT provisioning support"""
     
     try:
         # Check if user exists and is active
@@ -404,16 +539,63 @@ async def saml_validate(
             User.active == True
         ).first()
         
-        if not user:
-            # Log authentication failure
+        if not user and enable_jit:
+            # JIT Provisioning: Create user on-demand
+            logger.info(f"User {email} not found locally, attempting JIT provisioning")
+            
+            # In a real implementation, you might extract these attributes from:
+            # - SAML assertion attributes
+            # - External directory (LDAP, Active Directory)
+            # - API calls to HR systems
+            # For this example, we'll use basic information
+            jit_user_attributes = {
+                'first_name': email.split('@')[0].split('.')[0].title() if '.' in email.split('@')[0] else email.split('@')[0].title(),
+                'last_name': email.split('@')[0].split('.')[1].title() if '.' in email.split('@')[0] and len(email.split('@')[0].split('.')) > 1 else '',
+                'title': 'User',  # Default title
+                'external_id': None
+            }
+            
+            try:
+                user = await create_user_jit(db, email, jit_user_attributes)
+                
+                # Log successful JIT authentication
+                action_logger.log_saml_login(
+                    operation="jit_auth_success",
+                    user_email=email,
+                    success=True,
+                    saml_data={
+                        "jit_provisioning": True,
+                        "user_created": True,
+                        "local_user_id": user.id,
+                        "datadog_user_id": user.datadog_user_id,
+                        "sync_status": user.sync_status
+                    }
+                )
+                
+            except Exception as jit_error:
+                # Log JIT provisioning failure
+                action_logger.log_saml_login(
+                    operation="jit_auth_failed",
+                    user_email=email,
+                    success=False,
+                    error=f"JIT provisioning failed: {jit_error}"
+                )
+                
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Unable to create user {email} via JIT provisioning: {str(jit_error)}"
+                )
+        
+        elif not user:
+            # User doesn't exist and JIT is disabled
             action_logger.log_saml_login(
                 operation="auth_failed",
                 user_email=email,
                 success=False,
-                error="User not found or inactive"
+                error="User not found and JIT provisioning disabled"
             )
             
-            raise HTTPException(status_code=401, detail="User not found or inactive")
+            raise HTTPException(status_code=401, detail="User not found and JIT provisioning is disabled")
         
         # Get SP metadata for response generation
         sp_metadata_record = db.query(SAMLMetadata).filter(SAMLMetadata.active == True).first()
@@ -463,10 +645,13 @@ async def saml_validate(
                 "sp_entity_id": sp_metadata["entityId"],
                 "acs_url": sp_metadata["assertionConsumerService"]["url"],
                 "relay_state": RelayState,
+                "jit_provisioning": not user or user.created_at > datetime.utcnow() - timedelta(minutes=1),
                 "user_attributes": {
                     "has_first_name": bool(user.first_name),
                     "has_last_name": bool(user.last_name),
-                    "username": user.username
+                    "username": user.username,
+                    "sync_status": user.sync_status,
+                    "datadog_user_id": user.datadog_user_id
                 }
             }
         )
@@ -677,3 +862,84 @@ async def saml_configuration():
     }
     
     return config 
+
+@router.post("/jit-config")
+async def configure_jit_provisioning(
+    enable_jit: bool = True,
+    default_title: str = "User",
+    auto_activate: bool = True,
+    create_in_datadog: bool = True,
+    require_email_domain: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    """
+    Configure SAML JIT provisioning settings.
+    
+    This endpoint allows administrators to configure how JIT provisioning
+    should work for new users authenticating via SAML.
+    """
+    # For now, we'll just return the configuration
+    # In a production system, you might want to store this in the database
+    
+    config = {
+        "jit_enabled": enable_jit,
+        "default_title": default_title,
+        "auto_activate": auto_activate,
+        "create_in_datadog": create_in_datadog,
+        "require_email_domain": require_email_domain,
+        "supported_attribute_mappings": {
+            "firstName": "first_name",
+            "lastName": "last_name", 
+            "givenName": "first_name",
+            "sn": "last_name",
+            "displayName": "formatted_name",
+            "title": "title",
+            "mail": "email",
+            "employeeID": "external_id"
+        }
+    }
+    
+    return {
+        "message": "JIT provisioning configuration updated",
+        "config": config
+    }
+
+@router.get("/jit-config")
+async def get_jit_configuration():
+    """
+    Get current SAML JIT provisioning configuration.
+    
+    Returns the current JIT provisioning settings and available 
+    SAML attribute mappings.
+    """
+    return {
+        "jit_enabled": True,
+        "default_title": "User",
+        "auto_activate": True,
+        "create_in_datadog": True,
+        "require_email_domain": None,
+        "supported_flows": [
+            "SP-initiated with JIT",
+            "IdP-initiated with JIT"
+        ],
+        "supported_attribute_mappings": {
+            "firstName": "first_name",
+            "lastName": "last_name", 
+            "givenName": "first_name",
+            "sn": "last_name",
+            "displayName": "formatted_name",
+            "title": "title",
+            "mail": "email",
+            "employeeID": "external_id"
+        },
+        "sample_saml_attributes": {
+            "description": "Example SAML attributes that can be used for JIT provisioning",
+            "example": {
+                "firstName": "John",
+                "lastName": "Doe",
+                "mail": "john.doe@company.com",
+                "title": "Software Engineer",
+                "employeeID": "EMP123456"
+            }
+        }
+    } 

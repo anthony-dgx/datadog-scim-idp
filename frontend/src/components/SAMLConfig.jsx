@@ -10,9 +10,12 @@ const SAMLConfig = () => {
   const [selectedFile, setSelectedFile] = useState(null);
   const [uploadStatus, setUploadStatus] = useState('');
   const [showIdPMetadata, setShowIdPMetadata] = useState(false);
+  const [jitConfig, setJitConfig] = useState(null);
+  const [showJitConfig, setShowJitConfig] = useState(false);
 
   useEffect(() => {
     fetchMetadata();
+    fetchJitConfig();
   }, []);
 
   const fetchMetadata = async () => {
@@ -24,6 +27,18 @@ const SAMLConfig = () => {
       }
     } catch (error) {
       console.error('Error fetching metadata:', error);
+    }
+  };
+
+  const fetchJitConfig = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/saml/jit-config`);
+      if (response.ok) {
+        const data = await response.json();
+        setJitConfig(data);
+      }
+    } catch (error) {
+      console.error('Error fetching JIT config:', error);
     }
   };
 
@@ -244,6 +259,82 @@ const SAMLConfig = () => {
               {showIdPMetadata ? 'Hide' : 'View'} Metadata
             </button>
           </div>
+        </div>
+
+        {/* JIT Configuration Section */}
+        <div className="jit-config-section">
+          <div className="section-header">
+            <h3>
+              <Server size={20} />
+              Just-In-Time Provisioning
+            </h3>
+            <button
+              className="toggle-button"
+              onClick={() => setShowJitConfig(!showJitConfig)}
+            >
+              {showJitConfig ? <EyeOff size={16} /> : <Eye size={16} />}
+              {showJitConfig ? 'Hide' : 'Show'} JIT Config
+            </button>
+          </div>
+          
+          {showJitConfig && jitConfig && (
+            <div className="jit-config-details">
+              <div className="config-row">
+                <div className="config-item">
+                  <strong>JIT Enabled:</strong>
+                  <span className={`status ${jitConfig.jit_enabled ? 'enabled' : 'disabled'}`}>
+                    {jitConfig.jit_enabled ? 'Yes' : 'No'}
+                  </span>
+                </div>
+                <div className="config-item">
+                  <strong>Auto-activate Users:</strong>
+                  <span className={`status ${jitConfig.auto_activate ? 'enabled' : 'disabled'}`}>
+                    {jitConfig.auto_activate ? 'Yes' : 'No'}
+                  </span>
+                </div>
+              </div>
+              
+              <div className="config-row">
+                <div className="config-item">
+                  <strong>Create in Datadog:</strong>
+                  <span className={`status ${jitConfig.create_in_datadog ? 'enabled' : 'disabled'}`}>
+                    {jitConfig.create_in_datadog ? 'Yes' : 'No'}
+                  </span>
+                </div>
+                <div className="config-item">
+                  <strong>Default Title:</strong>
+                  <span className="value">{jitConfig.default_title}</span>
+                </div>
+              </div>
+
+              <div className="supported-flows">
+                <strong>Supported Flows:</strong>
+                <ul>
+                  {jitConfig.supported_flows.map((flow, index) => (
+                    <li key={index}>{flow}</li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="attribute-mappings">
+                <strong>SAML Attribute Mappings:</strong>
+                <div className="mapping-grid">
+                  {Object.entries(jitConfig.supported_attribute_mappings).map(([saml, local]) => (
+                    <div key={saml} className="mapping-item">
+                      <code>{saml}</code> → <code>{local}</code>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="sample-attributes">
+                <strong>Sample SAML Attributes:</strong>
+                <pre className="sample-code">
+                  {JSON.stringify(jitConfig.sample_saml_attributes.example, null, 2)}
+                </pre>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
