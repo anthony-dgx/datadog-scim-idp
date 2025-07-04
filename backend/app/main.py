@@ -7,7 +7,7 @@ import logging
 
 from .database import engine, get_db
 from .models import Base
-from .routers import users, groups, saml
+from .routers import users, groups, saml, roles
 from .logging_config import setup_logging
 
 # Initialize minimal logging
@@ -34,6 +34,7 @@ app.add_middleware(
 # Include routers
 app.include_router(users.router, prefix="/api")
 app.include_router(groups.router, prefix="/api")
+app.include_router(roles.router, prefix="/api")  # Role management for SAML role mapping
 app.include_router(saml.router)  # API endpoints for SAML management
 app.include_router(saml.public_router)  # Public SAML protocol endpoints
 
@@ -88,6 +89,23 @@ def read_root():
             <div class="endpoint"><span class="method">DELETE</span> /api/groups/{id} - Delete group</div>
             <div class="endpoint"><span class="method">POST</span> /api/groups/{id}/sync - Sync group to Datadog</div>
             <div class="endpoint"><span class="method">POST</span> /api/groups/bulk-sync - Bulk sync all pending groups</div>
+            
+            <h3>🔐 Roles & SAML Mapping</h3>
+            <div class="endpoint"><span class="method">GET</span> /api/roles - List all roles</div>
+            <div class="endpoint"><span class="method">POST</span> /api/roles - Create a new role</div>
+            <div class="endpoint"><span class="method">GET</span> /api/roles/{id} - Get role by ID</div>
+            <div class="endpoint"><span class="method">PUT</span> /api/roles/{id} - Update role</div>
+            <div class="endpoint"><span class="method">DELETE</span> /api/roles/{id} - Delete role</div>
+            <div class="endpoint"><span class="method">POST</span> /api/roles/mappings - Create role mappings</div>
+            <div class="endpoint"><span class="method">POST</span> /api/roles/{role_id}/users/{user_id} - Assign role to user</div>
+            <div class="endpoint"><span class="method">DELETE</span> /api/roles/{role_id}/users/{user_id} - Remove role from user</div>
+            
+            <h3>🔑 SAML Authentication</h3>
+            <div class="endpoint"><span class="method">GET</span> /saml/metadata - Get IdP metadata</div>
+            <div class="endpoint"><span class="method">POST</span> /saml/login - SAML login endpoint</div>
+            <div class="endpoint"><span class="method">POST</span> /saml/validate - SAML validation with JIT provisioning</div>
+            <div class="endpoint"><span class="method">GET</span> /api/saml/jit-config - Get JIT configuration</div>
+            <div class="endpoint"><span class="method">POST</span> /api/saml/jit-config - Configure JIT provisioning</div>
             
             <h2>⚙️ Configuration</h2>
             <p>Make sure to set the following environment variables:</p>

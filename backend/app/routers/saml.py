@@ -440,6 +440,35 @@ async def create_user_jit(db: Session, email: str, user_attributes: Dict[str, An
         db.commit()
         db.refresh(db_user)
         
+        # Assign default roles for JIT users
+        default_roles = user_attributes.get('default_roles', ['user'])
+        assigned_roles = []
+        
+        if default_roles:
+            from ..models import Role
+            import json
+            
+            # Find roles that match the default role values
+            matching_roles = db.query(Role).filter(
+                Role.idp_role_value.in_(default_roles),
+                Role.active == True
+            ).all()
+            
+            # If no matching roles found, assign the system default role
+            if not matching_roles:
+                default_role = db.query(Role).filter(Role.is_default == True, Role.active == True).first()
+                if default_role:
+                    matching_roles = [default_role]
+            
+            # Assign roles to user
+            if matching_roles:
+                db_user.roles.extend(matching_roles)
+                assigned_roles = [role.idp_role_value for role in matching_roles if role.idp_role_value]
+                
+                # Store IdP roles in user record
+                db_user.idp_roles = json.dumps(assigned_roles)
+                db_user.last_role_sync = datetime.utcnow()
+        
         # Create user in Datadog via SCIM
         from ..schemas import SCIMUser, SCIMEmail, SCIMName
         
@@ -475,6 +504,7 @@ async def create_user_jit(db: Session, email: str, user_attributes: Dict[str, An
                 saml_data={
                     "datadog_user_id": scim_response.id,
                     "local_user_id": db_user.id,
+                    "assigned_roles": assigned_roles,
                     "created_attributes": {
                         "first_name": first_name,
                         "last_name": last_name,
@@ -483,7 +513,7 @@ async def create_user_jit(db: Session, email: str, user_attributes: Dict[str, An
                 }
             )
             
-            logger.info(f"JIT provisioning successful for {email}: local_id={db_user.id}, datadog_id={scim_response.id}")
+            logger.info(f"JIT provisioning successful for {email}: local_id={db_user.id}, datadog_id={scim_response.id}, roles={assigned_roles}")
             
         except Exception as scim_error:
             # Mark sync as failed but keep local user
@@ -500,7 +530,8 @@ async def create_user_jit(db: Session, email: str, user_attributes: Dict[str, An
                 saml_data={
                     "local_user_created": True,
                     "datadog_user_created": False,
-                    "local_user_id": db_user.id
+                    "local_user_id": db_user.id,
+                    "assigned_roles": assigned_roles
                 }
             )
             
@@ -547,12 +578,13 @@ async def saml_validate(
             # - SAML assertion attributes
             # - External directory (LDAP, Active Directory)
             # - API calls to HR systems
-            # For this example, we'll use basic information
+            # For this example, we'll use basic information and assign default role
             jit_user_attributes = {
                 'first_name': email.split('@')[0].split('.')[0].title() if '.' in email.split('@')[0] else email.split('@')[0].title(),
                 'last_name': email.split('@')[0].split('.')[1].title() if '.' in email.split('@')[0] and len(email.split('@')[0].split('.')) > 1 else '',
                 'title': 'User',  # Default title
-                'external_id': None
+                'external_id': None,
+                'default_roles': ['user']  # Default role for JIT users
             }
             
             try:
@@ -619,12 +651,34 @@ async def saml_validate(
             }
         }
         
-        # Prepare user data for SAML assertion
+        # Prepare user data for SAML assertion including roles
+        import json
+        
+        # Get user's roles for SAML assertion
+        user_roles = []
+        if user.roles:
+            user_roles = [role.idp_role_value for role in user.roles if role.idp_role_value and role.active]
+        elif user.idp_roles:
+            # Fallback to stored IdP roles
+            user_roles = json.loads(user.idp_roles)
+        
+        # Get default role if user has no roles
+        default_role = None
+        if not user_roles:
+            from ..models import Role
+            default_role_obj = db.query(Role).filter(Role.is_default == True, Role.active == True).first()
+            if default_role_obj and default_role_obj.idp_role_value:
+                default_role = default_role_obj.idp_role_value
+        
         user_data = {
             "first_name": user.first_name,
             "last_name": user.last_name,
             "username": user.username,
-            "email": user.email
+            "email": user.email,
+            "roles": user_roles,  # For SAML role mapping
+            "default_role": default_role,  # Fallback role
+            "department": getattr(user, 'department', None),  # Optional department
+            "team": getattr(user, 'team', None)  # Optional team
         }
         
         # Generate SAML response

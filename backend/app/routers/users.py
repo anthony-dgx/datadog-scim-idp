@@ -32,13 +32,15 @@ def user_to_scim(user: User, base_url: str) -> SCIMUser:
 @router.get("/", response_model=List[UserResponse])
 def get_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     """Get all users"""
-    users = db.query(User).offset(skip).limit(limit).all()
+    from sqlalchemy.orm import selectinload
+    users = db.query(User).options(selectinload(User.roles)).offset(skip).limit(limit).all()
     return [UserResponse.model_validate(user.to_dict()) for user in users]
 
 @router.get("/{user_id}", response_model=UserResponse)
 def get_user(user_id: int, db: Session = Depends(get_db)):
     """Get a specific user by ID"""
-    user = db.query(User).filter(User.id == user_id).first()
+    from sqlalchemy.orm import selectinload
+    user = db.query(User).options(selectinload(User.roles)).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return UserResponse.model_validate(user.to_dict())

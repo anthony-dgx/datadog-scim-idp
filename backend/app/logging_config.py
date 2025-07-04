@@ -189,6 +189,33 @@ class FocusedLogger:
             self.saml_logger.error(f"SAML metadata {operation} failed", **log_data)
             statsd.increment("saml.metadata.error", tags=[f"operation:{operation}"])
     
+    def log_user_action(self, operation: str, resource_type: str = None, resource_id: Any = None, 
+                       success: bool = True, error: str = None, details: Dict[str, Any] = None):
+        """Log user management operations (roles, assignments, etc.)"""
+        log_data = {
+            "operation_type": "user_management",
+            "operation": operation,  # role_created, role_assigned, roles_synced, etc.
+            "resource_type": resource_type,  # role, user, assignment
+            "resource_id": resource_id,
+            "success": success,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        if details:
+            log_data["details"] = self._sanitize_payload(details)
+        
+        if error:
+            log_data["error"] = error
+        
+        logger = self.scim_logger  # Use SCIM logger for user management operations
+        
+        if success:
+            logger.info(f"User action: {operation}", **log_data)
+            statsd.increment("user.action.success", tags=[f"operation:{operation}", f"resource_type:{resource_type}"])
+        else:
+            logger.error(f"User action failed: {operation}", **log_data)
+            statsd.increment("user.action.error", tags=[f"operation:{operation}", f"resource_type:{resource_type}"])
+    
     def _sanitize_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Remove sensitive data from payloads before logging"""
         if not isinstance(payload, dict):

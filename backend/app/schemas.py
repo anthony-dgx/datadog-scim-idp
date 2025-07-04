@@ -18,7 +18,7 @@ Key SCIM Concepts:
 For complete API documentation, see: https://docs.datadoghq.com/api/latest/scim/
 """
 
-from pydantic import BaseModel, EmailStr, Field, validator
+from pydantic import BaseModel, EmailStr, Field, validator, computed_field
 from typing import List, Optional, Dict, Any, Union
 from datetime import datetime
 from enum import Enum
@@ -49,6 +49,9 @@ class UserResponse(UserBase):
     last_synced: Optional[datetime] = None
     sync_status: str
     sync_error: Optional[str] = None
+    idp_roles: List[str] = []
+    last_role_sync: Optional[datetime] = None
+    roles: List[Dict[str, Any]] = []
     created_at: datetime
     updated_at: datetime
 
@@ -595,4 +598,89 @@ class SAMLValidateRequest(BaseModel):
 class SAMLResponseData(BaseModel):
     SAMLResponse: str
     RelayState: Optional[str] = None
-    acs_url: str 
+    acs_url: str
+
+# Role Schemas for SAML Role Mapping
+class RoleBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = None
+    idp_role_value: Optional[str] = Field(None, description="IdP role value that maps to this role")
+    datadog_role_id: Optional[str] = Field(None, description="Datadog role UUID if synced")
+    active: bool = True
+    is_default: bool = False
+
+class RoleCreate(RoleBase):
+    """Schema for creating a new role"""
+    pass
+
+class RoleUpdate(BaseModel):
+    """Schema for updating a role"""
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    description: Optional[str] = None
+    idp_role_value: Optional[str] = None
+    datadog_role_id: Optional[str] = None
+    active: Optional[bool] = None
+    is_default: Optional[bool] = None
+
+class RoleResponse(RoleBase):
+    """Schema for role responses"""
+    id: int
+    uuid: str
+    created_at: datetime
+    updated_at: datetime
+    
+    @computed_field
+    @property
+    def user_count(self) -> int:
+        """Calculate the number of users assigned to this role"""
+        # If we have a users relationship loaded, count them
+        if hasattr(self, '_users') and self._users:
+            return len(self._users)
+        # Otherwise return 0 as fallback
+        return 0
+    
+    @classmethod
+    def from_orm(cls, obj):
+        """Custom from_orm method to handle user_count calculation"""
+        # Store the users relationship for the computed field
+        instance = super().from_orm(obj)
+        if hasattr(obj, 'users') and obj.users is not None:
+            instance._users = obj.users
+        else:
+            instance._users = []
+        return instance
+
+    class Config:
+        from_attributes = True
+        schema_extra = {
+            "example": {
+                "id": 1,
+                "uuid": "123e4567-e89b-12d3-a456-426614174000",
+                "name": "Administrator",
+                "description": "Full system access",
+                "idp_role_value": "admin",
+                "datadog_role_id": "datadog-admin-role-id",
+                "active": True,
+                "is_default": False,
+                "user_count": 5,
+                "created_at": "2023-01-01T00:00:00Z",
+                "updated_at": "2023-01-01T00:00:00Z"
+            }
+        }
+
+class RoleMappingRequest(BaseModel):
+    """Schema for creating role mappings"""
+    idp_role_value: str = Field(..., description="Role value from IdP")
+    role_name: str = Field(..., description="Local role name")
+    description: Optional[str] = None
+    active: bool = True
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "idp_role_value": "admin",
+                "role_name": "Administrator",
+                "description": "Full access administrator role",
+                "active": True
+            }
+        } 

@@ -1,10 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
-import { Users, UserPlus, Shield, Settings, Activity, Database } from 'lucide-react';
+import { Users, UserPlus, Shield, Settings, Activity, Database, KeyRound } from 'lucide-react';
 import UserList from './components/UserList';
 import GroupList from './components/GroupList';
 import SAMLConfig from './components/SAMLConfig';
+import RoleMapping from './components/RoleMapping';
 import './App.css';
 
 const Navigation = () => {
@@ -41,13 +42,24 @@ const Navigation = () => {
       </div>
       
       <div className="nav-section">
-        <div className="nav-section-title">Configuration</div>
+        <div className="nav-section-title">Authentication</div>
         <Link 
           to="/saml" 
           className={`nav-item ${isActive('/saml') ? 'active' : ''}`}
         >
           <Shield className="nav-icon" />
           <span>SAML Config</span>
+        </Link>
+      </div>
+
+      <div className="nav-section">
+        <div className="nav-section-title">Roles</div>
+        <Link 
+          to="/roles" 
+          className={`nav-item ${isActive('/roles') ? 'active' : ''}`}
+        >
+          <KeyRound className="nav-icon" />
+          <span>Role Mapping</span>
         </Link>
       </div>
       
@@ -86,6 +98,8 @@ const Header = () => {
 };
 
 function App() {
+  const [activeTab, setActiveTab] = useState('users');
+
   return (
     <Router>
       <div className="app">
@@ -97,6 +111,7 @@ function App() {
               <Route path="/" element={<UserList />} />
               <Route path="/users" element={<UserList />} />
               <Route path="/groups" element={<GroupList />} />
+              <Route path="/roles" element={<RoleMapping />} />
               <Route path="/saml" element={<SAMLConfig />} />
             </Routes>
           </div>

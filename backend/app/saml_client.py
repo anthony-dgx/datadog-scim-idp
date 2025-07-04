@@ -288,6 +288,21 @@ class SAMLConfig:
             
             attributes_xml += f'<saml:Attribute Name="eduPersonPrincipalName"><saml:AttributeValue>{user_email}</saml:AttributeValue></saml:Attribute>'
             
+            # Add role attributes for SAML Role Mapping
+            if user_data.get('roles'):
+                # Support multiple roles - Datadog can handle multiple values for the same attribute
+                for role in user_data['roles']:
+                    attributes_xml += f'<saml:Attribute Name="idp_role"><saml:AttributeValue>{role}</saml:AttributeValue></saml:Attribute>'
+            elif user_data.get('default_role'):
+                # Fallback to default role if no specific roles assigned
+                attributes_xml += f'<saml:Attribute Name="idp_role"><saml:AttributeValue>{user_data["default_role"]}</saml:AttributeValue></saml:Attribute>'
+            
+            # Add additional role-related attributes that Datadog might use
+            if user_data.get('department'):
+                attributes_xml += f'<saml:Attribute Name="department"><saml:AttributeValue>{user_data["department"]}</saml:AttributeValue></saml:Attribute>'
+            if user_data.get('team'):
+                attributes_xml += f'<saml:Attribute Name="team"><saml:AttributeValue>{user_data["team"]}</saml:AttributeValue></saml:Attribute>'
+            
             # First create the assertion XML separately so we can sign it
             assertion_xml = f"""<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
                     ID="{assertion_id}"

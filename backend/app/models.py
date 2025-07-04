@@ -14,6 +14,14 @@ user_group_association = Table(
     Column('group_id', Integer, ForeignKey('groups.id'), primary_key=True)
 )
 
+# Association table for many-to-many relationship between users and roles
+user_role_association = Table(
+    'user_roles',
+    Base.metadata,
+    Column('user_id', Integer, ForeignKey('users.id'), primary_key=True),
+    Column('role_id', Integer, ForeignKey('roles.id'), primary_key=True)
+)
+
 class User(Base):
     __tablename__ = "users"
     
@@ -34,14 +42,20 @@ class User(Base):
     sync_status = Column(String, default="pending")  # pending, synced, failed
     sync_error = Column(Text, nullable=True)
     
+    # SAML Role mapping fields
+    idp_roles = Column(Text, nullable=True)  # JSON array of roles from IdP
+    last_role_sync = Column(DateTime, nullable=True)  # When roles were last synced
+    
     # Timestamps
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
     
     # Relationships
     groups = relationship("Group", secondary=user_group_association, back_populates="members")
+    roles = relationship("Role", secondary=user_role_association, back_populates="users")
     
     def to_dict(self):
+        import json
         return {
             "id": self.id,
             "uuid": self.uuid,
@@ -57,6 +71,9 @@ class User(Base):
             "last_synced": self.last_synced.isoformat() if self.last_synced else None,
             "sync_status": self.sync_status,
             "sync_error": self.sync_error,
+            "idp_roles": json.loads(self.idp_roles) if self.idp_roles else [],
+            "last_role_sync": self.last_role_sync.isoformat() if self.last_role_sync else None,
+            "roles": [role.to_dict() for role in self.roles] if self.roles else [],
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None
         }
@@ -97,6 +114,44 @@ class Group(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "members": [member.to_dict() for member in self.members]
+        }
+
+class Role(Base):
+    __tablename__ = "roles"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    uuid = Column(String, unique=True, index=True, default=lambda: str(uuid.uuid4()))
+    name = Column(String, unique=True, index=True, nullable=False)
+    description = Column(Text, nullable=True)
+    
+    # Role mapping fields
+    idp_role_value = Column(String, nullable=True)  # Value from IdP that maps to this role
+    datadog_role_id = Column(String, nullable=True)  # Datadog role UUID if synced
+    
+    # Status fields
+    active = Column(Boolean, default=True)
+    is_default = Column(Boolean, default=False)  # Default role for new users
+    
+    # Timestamps
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    
+    # Relationships
+    users = relationship("User", secondary=user_role_association, back_populates="roles")
+    
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "uuid": self.uuid,
+            "name": self.name,
+            "description": self.description,
+            "idp_role_value": self.idp_role_value,
+            "datadog_role_id": self.datadog_role_id,
+            "active": self.active,
+            "is_default": self.is_default,
+            "user_count": len(self.users) if self.users else 0,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None
         }
 
 class SAMLMetadata(Base):
