@@ -52,13 +52,6 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
             (User.email == user.email) | (User.username == user.username)
         ).first()
         if existing_user:
-            # Log failed attempt
-            action_logger.log_user_action(
-                action="create",
-                user_data=user.model_dump(),
-                success=False,
-                error="User with this email or username already exists"
-            )
             raise HTTPException(
                 status_code=400, 
                 detail="User with this email or username already exists"
@@ -83,26 +76,11 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(db_user)
         
-        # Log successful creation
-        action_logger.log_user_action(
-            action="create",
-            user_data=db_user.to_dict(),
-            user_id=db_user.id,
-            success=True
-        )
-        
         return UserResponse.model_validate(db_user.to_dict())
         
     except HTTPException:
         raise
     except Exception as e:
-        # Log unexpected error
-        action_logger.log_user_action(
-            action="create",
-            user_data=user.model_dump(),
-            success=False,
-            error=str(e)
-        )
         raise HTTPException(status_code=500, detail="Internal server error")
 
 async def auto_sync_user_to_datadog(db_user: User, db: Session) -> tuple[bool, str]:
@@ -120,19 +98,7 @@ async def auto_sync_user_to_datadog(db_user: User, db: Session) -> tuple[bool, s
         db_user.sync_error = None
         db.commit()
         
-        # Log successful auto-sync
-        action_logger.log_sync_operation(
-            operation_type="auto_update",
-            entity_type="user",
-            entity_id=db_user.id,
-            datadog_id=db_user.datadog_user_id,
-            success=True,
-            sync_data={
-                "local_user": db_user.to_dict(),
-                "scim_payload": scim_user.model_dump(),
-                "context": "automatic_sync_on_update"
-            }
-        )
+
         
         return True, "User automatically synced to Datadog"
         
@@ -145,20 +111,7 @@ async def auto_sync_user_to_datadog(db_user: User, db: Session) -> tuple[bool, s
         db_user.sync_error = str(ve)
         db.commit()
         
-        # Log warning
-        action_logger.log_sync_operation(
-            operation_type="auto_update",
-            entity_type="user",
-            entity_id=db_user.id,
-            datadog_id=db_user.datadog_user_id,
-            success=False,
-            error=str(ve),
-            sync_data={
-                "local_user": db_user.to_dict(),
-                "context": "automatic_sync_on_update",
-                "warning": True
-            }
-        )
+
         
         return False, f"Auto-sync warning: {str(ve)}"
         
@@ -170,19 +123,7 @@ async def auto_sync_user_to_datadog(db_user: User, db: Session) -> tuple[bool, s
         db_user.sync_error = str(e)
         db.commit()
         
-        # Log failed auto-sync
-        action_logger.log_sync_operation(
-            operation_type="auto_update",
-            entity_type="user",
-            entity_id=db_user.id,
-            datadog_id=db_user.datadog_user_id,
-            success=False,
-            error=str(e),
-            sync_data={
-                "local_user": db_user.to_dict(),
-                "context": "automatic_sync_on_update"
-            }
-        )
+
         
         return False, f"Auto-sync failed: {str(e)}"
 
@@ -192,14 +133,6 @@ async def update_user(user_id: int, user: UserUpdate, db: Session = Depends(get_
     try:
         db_user = db.query(User).filter(User.id == user_id).first()
         if not db_user:
-            # Log failed attempt
-            action_logger.log_user_action(
-                action="update",
-                user_data=user.model_dump(exclude_unset=True),
-                user_id=user_id,
-                success=False,
-                error="User not found"
-            )
             raise HTTPException(status_code=404, detail="User not found")
         
         # Store original data for logging
@@ -224,38 +157,13 @@ async def update_user(user_id: int, user: UserUpdate, db: Session = Depends(get_
         # Automatically sync to Datadog if user was previously synced
         sync_success, sync_message = await auto_sync_user_to_datadog(db_user, db)
         
-        # Log successful update with both original and new data
-        action_logger.log_user_action(
-            action="update",
-            user_data={
-                "original": original_data,
-                "updated": db_user.to_dict(),
-                "changes": update_data,
-                "auto_sync_result": {
-                    "success": sync_success,
-                    "message": sync_message
-                }
-            },
-            user_id=user_id,
-            success=True
-        )
+
         
         return UserResponse.model_validate(db_user.to_dict())
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to update user {user_id}: {e}")
-        
-        # Log failed update
-        action_logger.log_user_action(
-            action="update",
-            user_data=user.model_dump(exclude_unset=True),
-            user_id=user_id,
-            success=False,
-            error=str(e)
-        )
-        
         raise HTTPException(status_code=500, detail=f"Failed to update user: {str(e)}")
 
 @router.delete("/{user_id}")
@@ -288,13 +196,7 @@ async def sync_user_to_datadog(user_id: int, db: Session = Depends(get_db)):
     """Sync a user to Datadog via SCIM"""
     db_user = db.query(User).filter(User.id == user_id).first()
     if not db_user:
-        action_logger.log_sync_operation(
-            operation_type="sync",
-            entity_type="user",
-            entity_id=user_id,
-            success=False,
-            error="User not found"
-        )
+        logger.error(f"User {user_id} not found for sync")
         raise HTTPException(status_code=404, detail="User not found")
     
     try:
@@ -322,19 +224,7 @@ async def sync_user_to_datadog(user_id: int, db: Session = Depends(get_db)):
         
         db.commit()
         
-        # Log successful sync operation
-        action_logger.log_sync_operation(
-            operation_type=operation_type,
-            entity_type="user",
-            entity_id=user_id,
-            datadog_id=scim_response.id,
-            success=True,
-            sync_data={
-                "local_user": db_user.to_dict(),
-                "scim_payload": scim_user.model_dump(),
-                "datadog_response": scim_response.model_dump() if hasattr(scim_response, 'model_dump') else str(scim_response)
-            }
-        )
+
         
         return SyncResponse(
             success=True,
@@ -351,19 +241,7 @@ async def sync_user_to_datadog(user_id: int, db: Session = Depends(get_db)):
         db_user.sync_error = str(ve)
         db.commit()
         
-        # Log failed sync operation
-        action_logger.log_sync_operation(
-            operation_type=operation_type if 'operation_type' in locals() else "sync",
-            entity_type="user",
-            entity_id=user_id,
-            datadog_id=db_user.datadog_user_id,
-            success=False,
-            error=str(ve),
-            sync_data={
-                "local_user": db_user.to_dict(),
-                "scim_payload": scim_user.model_dump() if 'scim_user' in locals() else None
-            }
-        )
+
         
         return SyncResponse(
             success=False,
@@ -379,19 +257,7 @@ async def sync_user_to_datadog(user_id: int, db: Session = Depends(get_db)):
         db_user.sync_error = str(e)
         db.commit()
         
-        # Log failed sync operation
-        action_logger.log_sync_operation(
-            operation_type=operation_type if 'operation_type' in locals() else "sync",
-            entity_type="user",
-            entity_id=user_id,
-            datadog_id=db_user.datadog_user_id,
-            success=False,
-            error=str(e),
-            sync_data={
-                "local_user": db_user.to_dict(),
-                "scim_payload": scim_user.model_dump() if 'scim_user' in locals() else None
-            }
-        )
+
         
         return SyncResponse(
             success=False,
@@ -404,24 +270,11 @@ async def sync_deactivate_user(user_id: int, db: Session = Depends(get_db)):
     """Deactivate a user in Datadog via SCIM"""
     db_user = db.query(User).filter(User.id == user_id).first()
     if not db_user:
-        action_logger.log_sync_operation(
-            operation_type="deactivate",
-            entity_type="user",
-            entity_id=user_id,
-            success=False,
-            error="User not found"
-        )
+        logger.error(f"User {user_id} not found for deactivation")
         raise HTTPException(status_code=404, detail="User not found")
     
     if not db_user.datadog_user_id:
-        action_logger.log_sync_operation(
-            operation_type="deactivate",
-            entity_type="user",
-            entity_id=user_id,
-            datadog_id=db_user.datadog_user_id,
-            success=False,
-            error="User not synced to Datadog yet"
-        )
+        logger.error(f"User {user_id} not synced to Datadog yet")
         raise HTTPException(status_code=400, detail="User not synced to Datadog yet")
     
     try:
@@ -437,17 +290,7 @@ async def sync_deactivate_user(user_id: int, db: Session = Depends(get_db)):
         db.commit()
         
         # Log successful deactivation
-        action_logger.log_sync_operation(
-            operation_type="deactivate",
-            entity_type="user",
-            entity_id=user_id,
-            datadog_id=db_user.datadog_user_id,
-            success=True,
-            sync_data={
-                "local_user": db_user.to_dict(),
-                "action": "deactivated_both_datadog_and_local"
-            }
-        )
+        logger.info(f"Successfully deactivated user {db_user.username} in Datadog and locally")
         
         return SyncResponse(
             success=True,
@@ -465,19 +308,7 @@ async def sync_deactivate_user(user_id: int, db: Session = Depends(get_db)):
         db.commit()
         
         # Log partial failure
-        action_logger.log_sync_operation(
-            operation_type="deactivate",
-            entity_type="user",
-            entity_id=user_id,
-            datadog_id=db_user.datadog_user_id,
-            success=False,
-            error=str(e),
-            sync_data={
-                "local_user": db_user.to_dict(),
-                "action": "deactivated_locally_only",
-                "datadog_error": str(e)
-            }
-        )
+        logger.error(f"Failed to deactivate user {user_id} in Datadog: {e}")
         
         return SyncResponse(
             success=False,

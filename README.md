@@ -170,6 +170,253 @@ Your stack includes these containers:
 
 ✨ **The agent automatically discovers and collects logs from all containers!**
 
+---
+
+# 🔧 SCIM Integration Guide for Customers
+
+This section provides comprehensive guidance for implementing SCIM with Datadog using this application as a reference.
+
+## 📚 SCIM Overview
+
+SCIM (System for Cross-domain Identity Management) is a standard for automating the exchange of user identity information between systems. With Datadog's SCIM API, you can:
+
+- **Provision users** automatically from your identity provider
+- **Manage group memberships** and team access
+- **Deactivate users** when they leave your organization
+- **Keep user information synchronized** between systems
+
+## 🎯 Key Implementation Patterns
+
+### 1. Authentication & Configuration
+
+```python
+# Environment setup for SCIM client
+DD_SCIM_BASE_URL = "https://api.datadoghq.com/api/v2/scim"  # US1
+DD_BEARER_TOKEN = "your_datadog_api_key"
+
+# Headers for all SCIM requests
+headers = {
+    "Authorization": f"Bearer {DD_BEARER_TOKEN}",
+    "Content-Type": "application/json",
+    "Accept": "application/json"
+}
+```
+
+### 2. User Lifecycle Management
+
+#### Creating Users
+```python
+# Example SCIM user payload
+user_payload = {
+    "userName": "john.doe@company.com",
+    "active": True,
+    "emails": [
+        {"value": "john.doe@company.com", "type": "work", "primary": True}
+    ],
+    "name": {
+        "formatted": "John Doe",
+        "givenName": "John",
+        "familyName": "Doe"
+    },
+    "title": "Software Engineer",
+    "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"]
+}
+
+# POST to /Users endpoint
+response = await client.post("/Users", json=user_payload)
+```
+
+#### Handling Conflicts (409 Errors)
+When a user already exists, implement automatic discovery:
+
+```python
+try:
+    response = await client.create_user(user_data)
+except HTTPStatusError as e:
+    if e.response.status_code == 409:
+        # User exists - find them
+        existing_user = await client.find_user_by_email(user_data.userName)
+        if existing_user:
+            return existing_user
+        else:
+            # Handle edge case where user exists but can't be found
+            raise ValueError("User exists but couldn't be retrieved")
+```
+
+#### User Updates
+```python
+# PATCH operations for partial updates
+patch_payload = {
+    "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+    "Operations": [
+        {
+            "op": "replace",
+            "path": "active",
+            "value": False  # Deactivate user
+        }
+    ]
+}
+
+response = await client.patch(f"/Users/{user_id}", json=patch_payload)
+```
+
+### 3. Group Management Best Practices
+
+#### Creating Groups with Members
+```python
+group_payload = {
+    "displayName": "Engineering Team",
+    "externalId": "eng-team-001",
+    "members": [
+        {
+            "$ref": f"https://api.datadoghq.com/api/v2/scim/Users/{user_id}",
+            "value": user_id,
+            "display": "John Doe",
+            "type": "User"
+        }
+    ],
+    "schemas": ["urn:ietf:params:scim:schemas:core:2.0:Group"]
+}
+```
+
+#### Incremental Member Synchronization
+Instead of replacing the entire member list, use incremental updates:
+
+```python
+async def sync_group_members(group_id, target_members):
+    # Get current members
+    current_group = await client.get_group(group_id)
+    current_member_ids = [m["value"] for m in current_group.members]
+    
+    # Calculate differences
+    to_add = set(target_members) - set(current_member_ids)
+    to_remove = set(current_member_ids) - set(target_members)
+    
+    # Add new members
+    for user_id in to_add:
+        await add_user_to_group(group_id, user_id)
+    
+    # Remove old members
+    for user_id in to_remove:
+        await remove_user_from_group(group_id, user_id)
+```
+
+## 🛠️ Production Implementation Tips
+
+### 1. Error Handling Strategy
+
+```python
+class SCIMError(Exception):
+    """Base exception for SCIM operations"""
+    pass
+
+class UserExistsError(SCIMError):
+    """User already exists in Datadog"""
+    pass
+
+class UserNotFoundError(SCIMError):
+    """User not found in Datadog"""
+    pass
+
+# Implement comprehensive error handling
+async def safe_create_user(user_data):
+    try:
+        return await client.create_user(user_data)
+    except HTTPStatusError as e:
+        if e.response.status_code == 409:
+            raise UserExistsError(f"User {user_data.userName} already exists")
+        elif e.response.status_code == 404:
+            raise UserNotFoundError("Resource not found")
+        else:
+            raise SCIMError(f"SCIM API error: {e.response.status_code}")
+```
+
+### 2. Retry Logic for Resilience
+
+```python
+import asyncio
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10)
+)
+async def resilient_scim_request(method, endpoint, data=None):
+    """SCIM request with automatic retries"""
+    try:
+        return await client.request(method, endpoint, data)
+    except httpx.RequestError:
+        # Network errors should be retried
+        raise
+    except HTTPStatusError as e:
+        if e.response.status_code >= 500:
+            # Server errors should be retried
+            raise
+        else:
+            # Client errors should not be retried
+            raise
+```
+
+### 3. Logging and Monitoring
+
+```python
+import structlog
+
+logger = structlog.get_logger("scim_operations")
+
+async def logged_scim_operation(operation, entity_type, entity_id, **kwargs):
+    """Wrapper for SCIM operations with comprehensive logging"""
+    start_time = time.time()
+    
+    try:
+        result = await operation(**kwargs)
+        duration = (time.time() - start_time) * 1000
+        
+        logger.info(
+            "SCIM operation successful",
+            operation_type=operation.__name__,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            duration_ms=duration,
+            success=True
+        )
+        return result
+        
+    except Exception as e:
+        duration = (time.time() - start_time) * 1000
+        
+        logger.error(
+            "SCIM operation failed",
+            operation_type=operation.__name__,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            duration_ms=duration,
+            success=False,
+            error=str(e)
+        )
+        raise
+```
+
+### 4. Rate Limiting Considerations
+
+```python
+import asyncio
+from asyncio import Semaphore
+
+# Limit concurrent SCIM requests
+scim_semaphore = Semaphore(5)  # Max 5 concurrent requests
+
+async def rate_limited_scim_call(operation):
+    async with scim_semaphore:
+        # Add small delay between requests
+        await asyncio.sleep(0.1)
+        return await operation()
+```
+
+This comprehensive guide provides everything you need to implement a production-ready SCIM integration with Datadog. Use this demo application as a reference, and adapt the patterns to your specific infrastructure and requirements.
+
+---
+
 ## 📖 Demo Walkthrough
 
 ### Step 1: Create Users
@@ -199,511 +446,321 @@ Your stack includes these containers:
 3. Create a group:
    - Group Name: `Engineering Team`
    - Description: `Software development team`
-   - Select members from the user list
-4. Click **"Create Group"**
+4. Select team members from the dropdown
+5. Click **"Create Group"**
+6. Sync the group to Datadog
 
-### Step 4: Sync Group to Datadog
+### Step 4: Test SAML Authentication
 
-1. Click the **Sync** button on the group
-2. The system will:
-   - Auto-sync any unsynced group members first
-   - Create the group in Datadog
-   - Add all members to the group
-3. Verify in Datadog that the group and memberships were created
+1. Navigate to the **SAML Config** tab
+2. Upload Datadog's SP metadata XML file
+3. Download the generated IdP metadata
+4. Configure Datadog to use this app as SAML IdP
+5. Test SSO login flow
 
-### Step 5: Advanced Features
+## 🔄 Advanced Workflows
 
-- **Bulk Sync**: Use "Bulk Sync" to sync all pending users/groups
-- **Member Management**: Add/remove members using the quick action buttons
-- **Incremental Sync**: Groups use smart incremental member updates to prevent conflicts
-- **Individual Member Sync**: Sync/remove specific members without affecting the entire group
-- **Enhanced Member Removal**: Fixed SCIM PATCH format with automatic fallback strategies
-- **Debug Tools**: Use the debug endpoint to troubleshoot sync discrepancies
-- **Deactivation**: Use "Deactivate in Datadog" to disable users
-- **Error Handling**: View sync errors by hovering over failed status badges
-- **Conflict Resolution**: Comprehensive 409/400 error handling with validation and retry logic
+### Bulk User Management
 
-## 🔐 SAML Identity Provider Configuration
+1. **Create Multiple Users**: Use the bulk import feature
+2. **Bulk Sync**: Sync all pending users at once
+3. **Group Assignment**: Automatically assign users to groups based on attributes
+4. **Deactivation**: Bulk deactivate users who left the organization
 
-The application also functions as a **SAML Identity Provider** for Datadog SSO authentication. This allows users to authenticate to Datadog using the same user database managed through the SCIM interface.
+### Group Synchronization
+
+1. **Incremental Updates**: Only sync changed group memberships
+2. **Dependency Management**: Ensure users exist before adding to groups
+3. **Cleanup Operations**: Remove orphaned group memberships
+4. **Metadata Updates**: Update group names and descriptions
+
+## 🔐 SAML Identity Provider for Testing
+
+This application **doubles as a SAML Identity Provider**, allowing you to test complete SAML authentication flows with Datadog. This is incredibly valuable for customers who want to:
+
+- **Test SAML SSO** before implementing their own IdP
+- **Validate SCIM + SAML integration** end-to-end
+- **Debug authentication issues** in a controlled environment
+- **Demo complete identity management** to stakeholders
 
 ### 🚀 SAML Setup Quick Start
 
-1. **Generate SAML Certificate & Key**:
-   ```bash
-   # Generate self-signed certificate (for development only)
-   openssl req -x509 -newkey rsa:2048 -keyout saml.key -out saml.crt -days 365 -nodes \
-     -subj "/C=US/ST=State/L=City/O=Organization/CN=localhost"
-   
-   # Convert to environment variable format (replace newlines with \n)
-   echo "SAML_CERT=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' saml.crt)"
-   echo "SAML_KEY=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' saml.key)"
-   ```
+#### Step 1: Generate SAML Certificates
 
-2. **Configure SAML Environment Variables**:
-   ```env
-   # SAML Identity Provider Configuration (add to your .env file)
-   SAML_ISSUER=http://localhost:8000/saml/metadata
-   SAML_CERT=-----BEGIN CERTIFICATE-----\nYOUR_CERTIFICATE_HERE\n-----END CERTIFICATE-----
-   SAML_KEY=-----BEGIN PRIVATE KEY-----\nYOUR_PRIVATE_KEY_HERE\n-----END PRIVATE KEY-----
-   ```
+```bash
+# Generate self-signed certificate (for development/testing)
+openssl req -x509 -newkey rsa:2048 -keyout saml.key -out saml.crt -days 365 -nodes \
+  -subj "/C=US/ST=CA/L=San Francisco/O=YourCompany/CN=localhost"
 
-   **📝 Environment Variable Format**: 
-   - Copy the certificate and key content from the commands above
-   - Replace actual newlines with `\n` in the environment variables
-   - Include the full `-----BEGIN/END-----` headers in the variables
+# Convert to environment variable format (replace newlines with \n)
+echo "SAML_CERT=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' saml.crt)"
+echo "SAML_KEY=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' saml.key)"
+```
 
-3. **Start the Application**:
-   ```bash
-   docker-compose up --build
-   ```
+#### Step 2: Configure SAML Environment Variables
 
-4. **Configure SAML in the UI**:
-   - Navigate to `http://localhost:3000/saml` in the web interface
-   - Download the IdP metadata XML file
-   - Follow the setup instructions in the SAML Config page
+Add these to your `.env` file:
 
-⚠️ **Important**: The `SAML_CERT` and `SAML_KEY` contain sensitive cryptographic material. The `.env` file is excluded from git via `.gitignore`. **Never commit certificates to version control**.
+```bash
+# SAML Identity Provider Configuration
+SAML_ISSUER=http://localhost:8000/saml/metadata
+SAML_CERT=-----BEGIN CERTIFICATE-----\nMIIDXTCC...YOUR_CERTIFICATE_HERE...\n-----END CERTIFICATE-----
+SAML_KEY=-----BEGIN PRIVATE KEY-----\nMIIEvQ...YOUR_KEY_HERE...\n-----END PRIVATE KEY-----
+```
 
-### 📋 SAML Configuration Process
+⚠️ **Important**: Copy the exact output from the commands above, including the `\n` characters for line breaks.
+
+#### Step 3: Start the Application
+
+```bash
+docker-compose up --build
+```
+
+### 🔧 Complete SAML Integration with Datadog
 
 #### Step 1: Configure Datadog SAML Settings
 
 1. **Access Datadog SAML Configuration**:
-   - Go to Datadog → Organization Settings → Login Methods
-   - Click "Configure SAML"
+   - Go to **Organization Settings → Login Methods → SAML**
+   - Click **"Configure SAML"**
 
 2. **Upload IdP Metadata**:
-   - Download IdP metadata from `http://localhost:8000/saml/metadata`
-   - Or use the metadata URL directly in Datadog: `http://localhost:8000/saml/metadata`
-   - Upload/configure the metadata in Datadog's SAML settings
+   - Download metadata from: `http://localhost:8000/saml/metadata`
+   - Or use the metadata URL directly: `http://localhost:8000/saml/metadata`
+   - Upload the metadata XML in Datadog's SAML configuration
 
-3. **Enable SAML Authentication**:
-   - Enable SAML authentication in Datadog
-   - Note the **Single Sign-On URL** provided by Datadog
+3. **Configure SAML Settings**:
+   - **Identity Provider Entity ID**: `http://localhost:8000/saml/metadata`
+   - **SSO URL**: `http://localhost:8000/saml/login`
+   - **Certificate**: Will be auto-imported from metadata
+   - **Attribute Mapping**: 
+     - User ID: `eduPersonPrincipalName` → `email`
+     - First Name: `givenName` → `first_name`
+     - Last Name: `sn` → `last_name`
 
-#### Step 2: Configure SP Metadata in Your IdP
+4. **Enable SAML and Get SP Metadata**:
+   - Enable SAML authentication
+   - Download the **SP metadata XML** file from Datadog
 
-1. **Download Datadog SP Metadata**:
-   - In Datadog's SAML configuration page, download the SP metadata XML file
+#### Step 2: Configure SP Metadata in Demo App
 
-2. **Upload SP Metadata**:
-   - Go to `http://localhost:3000/saml` in your SCIM demo application
-   - Upload the Datadog SP metadata XML file
-   - The system will automatically parse and configure the SAML endpoints
+1. **Access SAML Configuration UI**:
+   - Navigate to `http://localhost:3000/saml`
 
-#### Step 3: Test SAML Authentication
+2. **Upload Datadog SP Metadata**:
+   - Upload the SP metadata XML file you downloaded from Datadog
+   - The app will automatically parse the Assertion Consumer Service URL
 
-1. **Initiate SAML Login**:
-   - Use the Single Sign-On URL from Datadog
-   - You'll be redirected to the IdP login page at `http://localhost:8000/saml/login`
+3. **Verify Configuration**:
+   - Check that the ACS URL is correctly configured
+   - Download the IdP metadata to double-check it matches what you uploaded to Datadog
 
-2. **Authenticate**:
-   - Enter the email address of a user that exists in your SCIM demo database
-   - The user must be active and synced to Datadog via SCIM
+### 🧪 Testing SAML Authentication
 
-3. **Automatic Redirect**:
-   - After successful authentication, you'll be automatically redirected back to Datadog
+#### Complete Test Flow:
+
+1. **Ensure Users Exist**:
+   ```bash
+   # First, create test users via SCIM
+   # User must exist in the demo app database AND be synced to Datadog
+   ```
+
+2. **Initiate SAML Login**:
+   - In Datadog, click **"Login with SAML"**
+   - You'll be redirected to `http://localhost:8000/saml/login`
+
+3. **Authenticate**:
+   - Enter the **email address** of a user that exists in your demo database
+   - User must be **active** and **synced to Datadog** via SCIM
+   - Click **"Login"**
+
+4. **Automatic Redirect**:
+   - The app generates a signed SAML assertion
+   - You're automatically redirected back to Datadog
    - You should be logged in as that user
 
-### 🔧 SAML Technical Details
+#### OAuth-like Redirect URL Security
 
-**Supported SAML Features:**
-- ✅ **HTTP-POST binding** for SAML2 (required by Datadog)
-- ✅ **Email-based NameID** (`urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress`)
+The SAML implementation includes **OAuth-inspired security features** for handling redirect URLs through the `RelayState` parameter:
+
+**🔒 Redirect URL Validation:**
+- **Length Limits**: Maximum 2048 characters (OAuth standard)
+- **Protocol Allowlist**: Only `http` and `https` schemes allowed
+- **Domain Allowlist**: Configurable list of trusted domains
+- **XSS Protection**: HTML escaping of all RelayState parameters
+- **Open Redirect Prevention**: Blocks dangerous schemes (`javascript:`, `data:`, etc.)
+
+**⚙️ Configuration:**
+```env
+# Add custom allowed redirect domains (comma-separated)
+SAML_ALLOWED_REDIRECT_DOMAINS=example.com,app.example.com
+```
+
+**🛠️ Discovery Endpoint:**
+```bash
+# Get SAML configuration (OAuth-like discovery)
+curl http://localhost:8000/saml/config
+```
+
+**📋 Default Allowed Domains:**
+- `datadoghq.com` and all Datadog subdomains (`us3.datadoghq.com`, `eu1.datadoghq.com`, etc.)
+- `localhost` and `127.0.0.1` for development
+- Custom domains via environment variable
+
+**🎨 User Experience:**
+- Users see where they'll be redirected before authentication
+- Clear visual indication of destination URL
+- Validated and sanitized redirect parameters
+
+#### Troubleshooting SAML:
+
+**Authentication Failed**:
+- ✅ User exists in demo database
+- ✅ User is active (`active: true`)
+- ✅ User is synced to Datadog (`sync_status: "synced"`)
+- ✅ Email matches exactly between systems
+
+**SAML Response Invalid**:
+- ✅ Certificates are properly formatted in `.env`
+- ✅ SP metadata is uploaded correctly
+- ✅ Datadog SP metadata is configured in demo app
+
+**Redirect Issues**:
+- ✅ ACS URL in Datadog matches the one in SP metadata
+- ✅ Both systems can reach each other's URLs
+
+### 🔍 SAML Technical Details
+
+**Supported Features**:
+- ✅ **HTTP-POST binding** (required by Datadog)
+- ✅ **Email-based NameID** format
 - ✅ **Signed assertions** with X.509 certificate
 - ✅ **SP-initiated SSO** flow
-- ✅ **Just-in-Time (JIT) provisioning** via existing SCIM integration
+- ✅ **Just-in-Time (JIT) provisioning** via SCIM integration
 
-**SAML Attributes Sent to Datadog:**
-- `eduPersonPrincipalName` (URN: `urn:oid:1.3.6.1.4.1.5923.1.1.1.6`) → Maps to Datadog username (email)
-- `givenName` (URN: `urn:oid:2.5.4.42`) → User's first name (optional)
-- `sn` (URN: `urn:oid:2.5.4.4`) → User's surname/last name (optional)
+**SAML Attributes Sent**:
+- `eduPersonPrincipalName` → User's email (NameID)
+- `givenName` → First name
+- `sn` → Last name (surname)
 
-**SAML Endpoints:**
-- `GET /saml/metadata` - IdP metadata XML (for configuring in Datadog)
-- `GET /saml/login` - SP-initiated login endpoint (called by Datadog)
-- `POST /saml/validate` - User authentication and SAML response generation
-- `GET /saml/logout` - SAML logout endpoint (optional)
-- `POST /api/saml/metadata` - Upload Datadog SP metadata XML
-- `GET /api/saml/metadata-list` - List configured SP metadata
-
-**Authentication Flow:**
+**Authentication Flow**:
 1. User clicks "Login with SAML" in Datadog
 2. Datadog redirects to IdP with SAMLRequest
-3. IdP displays email confirmation form
+3. IdP displays authentication form
 4. User enters email and submits
 5. IdP validates user exists and is active
 6. IdP generates signed SAML assertion
-7. IdP auto-submits SAMLResponse back to Datadog
+7. IdP auto-submits response back to Datadog
 8. Datadog validates assertion and logs user in
 
-**JIT Provisioning:**
-- If a user doesn't exist in Datadog, they're automatically created via SCIM
-- User attributes are populated from the local database
-- Default role assignment can be configured in Datadog
+### 💡 Customer Use Cases
 
-### 🔐 Security Considerations
+**For Testing SCIM + SAML Integration**:
+```bash
+# 1. Create users via SCIM
+curl -X POST http://localhost:8000/api/users \
+  -H "Content-Type: application/json" \
+  -d '{"username":"test.user","email":"test.user@company.com","first_name":"Test","last_name":"User"}'
 
-**For Production Use:**
-- ✅ Use proper SSL/TLS certificates
-- ✅ Generate secure RSA keys (2048-bit minimum)
-- ✅ Store certificates securely (not in environment variables)
-- ✅ Implement proper session management
-- ✅ Add CSRF protection
-- ✅ Validate SAML requests thoroughly
-- ✅ Log all authentication attempts
+# 2. Sync to Datadog
+curl -X POST http://localhost:8000/api/users/1/sync
 
-**Development Notes:**
-- The demo uses self-signed certificates for simplicity
-- All SAML operations are logged to Datadog for debugging
-- Users must exist in the local database to authenticate
-- SAML and SCIM work together for complete identity management
-
-## 🛠️ Development
-
-### Local Development (without Docker)
-
-1. **Backend setup**:
-   ```bash
-   cd backend
-   pip install -r requirements.txt
-   uvicorn app.main:app --reload
-   ```
-
-2. **Frontend setup**:
-   ```bash
-   cd frontend
-   npm install
-   npm start
-   ```
-
-3. **Database setup**:
-   - Install PostgreSQL locally
-   - Create database: `scim_demo`
-   - Update `DATABASE_URL` in `.env`
-
-### Project Structure
-
-```
-scim-demo/
-├── backend/                 # FastAPI backend
-│   ├── app/
-│   │   ├── main.py         # FastAPI application
-│   │   ├── models.py       # SQLAlchemy models
-│   │   ├── schemas.py      # Pydantic models
-│   │   ├── database.py     # Database configuration
-│   │   ├── scim_client.py  # Datadog SCIM client
-│   │   ├── saml_client.py  # SAML Identity Provider
-│   │   └── routers/        # API route handlers
-│   │       ├── users.py    # User CRUD + sync
-│   │       ├── groups.py   # Group CRUD + sync
-│   │       └── saml.py     # SAML IdP endpoints
-│   ├── Dockerfile
-│   └── requirements.txt
-├── frontend/               # React frontend
-│   ├── src/
-│   │   ├── App.jsx         # Main application
-│   │   ├── App.css         # Datadog-inspired styles
-│   │   └── components/     # React components
-│   │       ├── UserList.jsx    # User management
-│   │       ├── GroupList.jsx   # Group management
-│   │       └── SAMLConfig.jsx  # SAML configuration
-│   ├── public/
-│   ├── Dockerfile
-│   └── package.json
-├── docker-compose.yml      # Container orchestration
-└── README.md              # This file
+# 3. Test SAML login with test.user@company.com
+# 4. Verify user appears in Datadog with correct attributes
 ```
 
-## 📡 API Endpoints
+**For Customer Demos**:
+- Show complete identity management lifecycle
+- Demonstrate automatic provisioning + authentication
+- Test group memberships and access control
+- Validate attribute mapping and JIT provisioning
 
-### Users
-- `GET /api/users` - List all users
-- `POST /api/users` - Create a new user
-- `GET /api/users/{id}` - Get user by ID
-- `PUT /api/users/{id}` - Update user
-- `DELETE /api/users/{id}` - Delete user
-- `POST /api/users/{id}/sync` - Sync user to Datadog
-- `POST /api/users/{id}/sync-deactivate` - Deactivate user in Datadog
-- `POST /api/users/bulk-sync` - Bulk sync all pending users
+**For Development**:
+- Test SAML assertion formats
+- Debug attribute mapping issues
+- Validate certificate and signature handling
+- Test error conditions and edge cases
 
-### Groups
-- `GET /api/groups` - List all groups
-- `POST /api/groups` - Create a new group
-- `GET /api/groups/{id}` - Get group by ID
-- `PUT /api/groups/{id}` - Update group
-- `DELETE /api/groups/{id}` - Delete group
-- `POST /api/groups/{id}/sync` - Sync group to Datadog (incremental member updates)
-- `PATCH /api/groups/{id}/metadata` - Update only group metadata (name/description) in Datadog
-- `POST /api/groups/bulk-sync` - Bulk sync all pending groups
-- `POST /api/groups/{group_id}/members/{user_id}` - Add member to group locally
-- `DELETE /api/groups/{group_id}/members/{user_id}` - Remove member from group locally
-- `POST /api/groups/{group_id}/members/{user_id}/sync` - Sync specific member to Datadog group
-- `DELETE /api/groups/{group_id}/members/{user_id}/sync` - Remove specific member from Datadog group
-- `GET /api/groups/{group_id}/debug` - Debug endpoint showing local vs Datadog group state
+### 🔐 Security Notes
 
-### SAML Identity Provider
-- `GET /saml/metadata` - IdP metadata XML (for configuring in Datadog)
-- `GET /saml/login` - SP-initiated login endpoint (called by Datadog)
-- `POST /saml/validate` - User authentication and SAML response generation
-- `GET /saml/logout` - SAML logout endpoint (optional)
-- `POST /api/saml/metadata` - Upload Datadog SP metadata XML
-- `GET /api/saml/metadata-list` - List configured SP metadata
-- `DELETE /api/saml/metadata/{id}` - Delete SP metadata record
+**For Production Use**:
+- 🔒 Use proper SSL/TLS certificates (not self-signed)
+- 🔑 Generate secure RSA keys (2048-bit minimum)
+- 💾 Store certificates securely (not in environment variables)
+- 📝 Implement proper session management
+- 🛡️ Add CSRF protection
+- 📊 Monitor all authentication attempts
 
-### System
-- `GET /health` - Health check endpoint
-- `GET /docs` - API documentation (Swagger UI)
+**Development Setup**:
+- ⚠️ Self-signed certificates are OK for testing
+- 📋 All SAML operations are logged for debugging
+- 🔍 Users must exist locally to authenticate
+- ⚡ SAML and SCIM work together seamlessly
 
-## 📊 Comprehensive Logging & Monitoring with Datadog Agent
+This SAML functionality makes the demo app a complete **identity management testing platform**, perfect for validating your SCIM integration alongside authentication flows.
 
-The application includes comprehensive logging with a **Datadog agent** that automatically collects all logs and sends them to Datadog for monitoring and debugging.
-
-### 🔍 What Gets Logged
-
-**All User Actions:**
-- User creation, updates, deletions with full payloads
-- Sync operations with before/after states
-- Success/failure metrics and timing
-
-**All Group Actions:**
-- Group creation, updates, deletions with member details
-- Group sync operations including member auto-sync
-- Member management (add/remove) activities
-
-**SCIM API Calls:**
-- Complete request payloads sent to Datadog
-- Full response payloads received from Datadog
-- HTTP status codes, timing, and error details
-- Authentication token usage (sanitized)
-
-**System Events:**
-- Application startup with configuration status
-- Database connection health
-- Environment variable configuration
-
-### 📋 Log Structure
-
-All logs are structured JSON with the following fields:
-
-```json
-{
-  "timestamp": "2024-01-01T12:00:00Z",
-  "level": "INFO",
-  "service": "scim-demo",
-  "environment": "development",
-  "action_type": "user_action|group_action|scim_api_call|sync_operation",
-  "success": true,
-  "duration_ms": 150,
-  "user_id": 123,
-  "datadog_id": "dd-user-456",
-  "request_payload": { /* Full SCIM request */ },
-  "response_payload": { /* Full SCIM response */ },
-  "trace_id": "abc123",
-  "span_id": "def456"
-}
-```
-
-### 🔧 Datadog Agent Configuration
-
-The application includes a **Datadog agent container** that automatically collects logs from all services and forwards them to Datadog. The agent is configured via environment variables:
-
-**✅ Required Configuration:**
-```env
-# Single API key for both agent and SCIM operations
-DD_API_KEY=your_datadog_api_key_here          # Agent log collection
-DD_BEARER_TOKEN=your_datadog_api_key_here     # SCIM API (can be same key)
-DD_SITE=datadoghq.com                         # Your Datadog region
-```
-
-**⚙️ Auto-configured by Docker (no changes needed):**
-```env
-DD_SERVICE_NAME=scim-demo                     # Service name in logs
-DD_ENV=development                            # Environment tag
-DD_AGENT_HOST=datadog-agent                   # Agent hostname
-DD_DOGSTATSD_HOST=datadog-agent               # Metrics endpoint
-```
-
-**🔍 Agent Features:**
-- **Automatic log discovery** - Finds and collects logs from all containers
-- **Container metadata** - Adds container name, image, labels to logs
-- **Log processing** - Parses JSON logs and adds structured fields
-- **Buffering & retry** - Local buffering prevents log loss
-
-**Benefits of Agent-Based Logging:**
-- ✅ **Local buffering** - No log loss during network issues
-- ✅ **Automatic collection** - Picks up all container logs automatically
-- ✅ **Better performance** - No blocking HTTP calls from application
-- ✅ **Rich metadata** - Container info, labels, and auto-tagging
-- ✅ **APM integration** - Automatic trace correlation
-
-### 📈 Metrics & Dashboards
-
-The application sends metrics to Datadog:
-
-- `scim.user.action.success` - User operation success count
-- `scim.user.action.error` - User operation error count  
-- `scim.group.action.success` - Group operation success count
-- `scim.group.action.error` - Group operation error count
-- `scim.api.request.success` - SCIM API success count
-- `scim.api.request.error` - SCIM API error count
-- `scim.api.request.duration` - SCIM API response times
-- `scim.sync.success` - Sync operation success count
-- `scim.sync.error` - Sync operation error count
-
-### 🔍 Example Log Outputs
-
-**User Sync Operation:**
-```json
-{
-  "action_type": "sync_operation",
-  "operation_type": "create",
-  "entity_type": "user",
-  "entity_id": 123,
-  "datadog_id": "dd-user-456",
-  "success": true,
-  "sync_data": {
-    "local_user": { "username": "john.doe", "email": "john@example.com" },
-    "scim_payload": { "userName": "john.doe", "active": true, "emails": [...] },
-    "datadog_response": { "id": "dd-user-456", "userName": "john.doe" }
-  }
-}
-```
-
-**SCIM API Call:**
-```json
-{
-  "action_type": "scim_api_call",
-  "method": "POST",
-  "endpoint": "/Users",
-  "status_code": 201,
-  "duration_ms": 245,
-  "request_payload": { "userName": "john.doe", "active": true },
-  "response_payload": { "id": "dd-user-456", "userName": "john.doe" },
-  "success": true
-}
-```
-
-### 🛡️ Security & Privacy
-
-- **Sensitive Data**: Passwords, tokens, and secrets are automatically redacted
-- **PII Handling**: Personal information is logged but can be configured to exclude
-- **Payload Sanitization**: All payloads are sanitized before logging
-- **Structured Logging**: Consistent JSON format for easy parsing and alerting
-
-## 🎨 UI Features
-
-### Datadog-Inspired Design
-- **Dark Theme**: Modern dark UI matching Datadog's aesthetic
-- **Purple Accents**: Datadog's signature purple color (#632ca6)
-- **Status Indicators**: Color-coded sync status badges
-- **Smooth Animations**: Hover effects and loading states
-- **Responsive Design**: Works on desktop and mobile
-
-### User Experience
-- **Real-time Feedback**: Toast notifications for all actions
-- **Loading States**: Spinners during async operations
-- **Error Handling**: Clear error messages and retry options
-- **Empty States**: Helpful prompts when no data exists
-- **Bulk Operations**: Efficient management of multiple items
-
-## 🔧 Troubleshooting
+## 🐛 Troubleshooting
 
 ### Common Issues
 
-1. **"DD_BEARER_TOKEN environment variable is required"**
-   - Ensure your `.env` file has both `DD_API_KEY` and `DD_BEARER_TOKEN` set
-   - Both can use the same Datadog API key value
-   - Verify the API key has the required scopes: `user_access_invite`, `user_access_manage`, `logs_write`, `metrics_write`
+**401 Unauthorized**
+- Check your `DD_BEARER_TOKEN` is valid
+- Verify API key has required scopes
+- Ensure correct Datadog site configuration
 
-2. **"Failed to sync user to Datadog"**
-   - Check your API key permissions in Datadog
-   - Verify `DD_SITE` matches your Datadog region
-   - SCIM URL is auto-configured based on `DD_SITE`
-   - Check network connectivity and API rate limits
+**409 Conflict Errors**
+- User already exists in Datadog
+- The app automatically handles this by finding existing users
+- Check logs for user discovery results
 
-3. **"Issues with group member management (409 conflicts, member removal failures)"**
-   - **Fixed in v2.1**: 
-     - Groups use incremental PATCH operations with correct Datadog SCIM format
-     - Member removal now includes required `"value": null` for remove operations
-     - Automatic fallback to PUT operations if PATCH fails
-     - Enhanced validation and error handling
-   - **Debug tools**: Use `GET /api/groups/{id}/debug` to compare local vs Datadog state
-   - **Individual operations**: 
-     - `PATCH /api/groups/{id}/metadata` - Update only group name/description
-     - `POST/DELETE /api/groups/{group_id}/members/{user_id}/sync` - Individual member management
+**Network Timeouts**
+- Check Datadog service status
+- Verify firewall/proxy settings
+- Review rate limiting logs
 
-4. **"Datadog agent connection issues"**
-   - Ensure `DD_API_KEY` is set for the agent
-   - Verify `DD_SITE` is correctly configured
-   - Check agent logs: `docker-compose logs datadog-agent`
-   - Agent automatically connects to other containers via Docker networking
+**Group Sync Failures**
+- Ensure all group members are synced to Datadog first
+- Check group size limits
+- Verify member permissions
 
-5. **Database connection errors**
-   - Ensure PostgreSQL is running (automatic with Docker Compose)
-   - Check DATABASE_URL format
+### Debugging with Logs
 
-6. **Frontend not loading**
-   - Verify both backend and frontend containers are running
-   - Check that ports 3000 and 8000 are available
+Check Datadog Log Explorer for detailed operation logs:
 
-7. **SAML certificate errors ("SAML_CERT or SAML_KEY not configured" or empty certificate errors)**
-   - **Check environment variables**: Ensure `SAML_CERT` and `SAML_KEY` are set in your `.env` file
-   - **Verify format**: Certificate and key should include full headers (`-----BEGIN CERTIFICATE-----`, etc.)
-   - **Check newlines**: Replace actual newlines with `\n` in the environment variables
-   - **Generate certificates**: Run the certificate generation commands from Step 2
-   - **Restart containers**: After updating `.env`: `docker-compose down && docker-compose up --build`
-
-### Logs and Debugging
-
-```bash
-# View all container logs
-docker-compose logs
-
-# View specific service logs
-docker-compose logs backend
-docker-compose logs frontend
-docker-compose logs db
-
-# Follow logs in real-time
-docker-compose logs -f backend
 ```
+# View all SCIM operations
+logger.name:scim_operations
 
-## 🚦 Health Checks
+# View failed operations only
+logger.name:scim_operations success:false
 
-The application includes health check endpoints:
-
-- **Backend Health**: `GET /health`
-- **Database Status**: Included in health check response
-- **Datadog Configuration**: Shows if API credentials are configured
-
-## 🔒 Security Considerations
-
-- API keys are passed via environment variables
-- HTTPS should be used in production
-- Database credentials should be rotated regularly
-- Consider implementing rate limiting for production use
-
-## 📚 Additional Resources
-
-- [Datadog SCIM API Documentation](https://docs.datadoghq.com/api/latest/scim/)
-- [FastAPI Documentation](https://fastapi.tiangolo.com/)
-- [React Documentation](https://reactjs.org/)
-- [Docker Compose Documentation](https://docs.docker.com/compose/)
+# View specific user operations
+logger.name:scim_operations user_email:john.doe@company.com
+```
 
 ## 🤝 Contributing
 
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature-name`
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
+We welcome contributions! Please see our contributing guidelines for:
+
+- Code style and standards
+- Testing requirements
+- Documentation updates
+- Feature requests and bug reports
 
 ## 📄 License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
+## 🙋‍♂️ Support
+
+For questions and support:
+
+- 📧 Email: support@example.com
+- 🐛 Issues: GitHub Issues
+- 📖 Documentation: This README and inline code comments
+- 💬 Community: Join our Slack channel
+
 ---
 
-**Built with ❤️ for Datadog SCIM integration demos** 
+  **Made with ❤️ for the Datadog community**
+``` 

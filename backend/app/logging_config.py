@@ -64,9 +64,9 @@ class DatadogLogHandler(logging.Handler):
             print(f"Logging error: {e}", flush=True)
 
 def setup_logging():
-    """Configure structured logging for the application"""
+    """Configure minimal logging for the application"""
     
-    # Configure structlog
+    # Configure structlog for our specific loggers only
     structlog.configure(
         processors=[
             structlog.stdlib.filter_by_level,
@@ -84,80 +84,35 @@ def setup_logging():
         cache_logger_on_first_use=True,
     )
     
-    # Configure standard logging
+    # Configure logging with minimal output - only errors for general application
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.ERROR,  # Only log errors for general application
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[
             logging.StreamHandler(),
             DatadogLogHandler()
         ]
     )
+    
+    # Set specific loggers to appropriate levels
+    logging.getLogger("scim_operations").setLevel(logging.INFO)  # SCIM calls
+    logging.getLogger("saml_operations").setLevel(logging.INFO)  # SAML operations
+    logging.getLogger("uvicorn.access").setLevel(logging.ERROR)  # Suppress HTTP access logs
+    logging.getLogger("uvicorn.error").setLevel(logging.ERROR)   # Only errors from uvicorn
 
-class ActionLogger:
-    """Specialized logger for tracking user actions and SCIM operations"""
+class FocusedLogger:
+    """Focused logger for SCIM and SAML operations only"""
     
     def __init__(self):
-        self.logger = structlog.get_logger("scim_actions")
-    
-    def log_user_action(self, action: str, user_data: Dict[str, Any], user_id: Optional[int] = None, success: bool = True, error: str = None):
-        """Log user-related actions"""
-        log_data = {
-            "action_type": "user_action",
-            "action": action,
-            "user_id": user_id,
-            "success": success,
-            "user_data": {
-                "username": user_data.get("username"),
-                "email": user_data.get("email"),
-                "active": user_data.get("active"),
-                "sync_status": user_data.get("sync_status"),
-            },
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-        if error:
-            log_data["error"] = error
-            
-        if success:
-            self.logger.info(f"User {action} successful", **log_data)
-            statsd.increment("scim.user.action.success", tags=[f"action:{action}"])
-        else:
-            self.logger.error(f"User {action} failed", **log_data)
-            statsd.increment("scim.user.action.error", tags=[f"action:{action}"])
-    
-    def log_group_action(self, action: str, group_data: Dict[str, Any], group_id: Optional[int] = None, success: bool = True, error: str = None):
-        """Log group-related actions"""
-        log_data = {
-            "action_type": "group_action",
-            "action": action,
-            "group_id": group_id,
-            "success": success,
-            "group_data": {
-                "display_name": group_data.get("display_name"),
-                "description": group_data.get("description"),
-                "member_count": len(group_data.get("members", [])),
-                "sync_status": group_data.get("sync_status"),
-            },
-            "timestamp": datetime.utcnow().isoformat()
-        }
-        
-        if error:
-            log_data["error"] = error
-            
-        if success:
-            self.logger.info(f"Group {action} successful", **log_data)
-            statsd.increment("scim.group.action.success", tags=[f"action:{action}"])
-        else:
-            self.logger.error(f"Group {action} failed", **log_data)
-            statsd.increment("scim.group.action.error", tags=[f"action:{action}"])
+        self.scim_logger = structlog.get_logger("scim_operations")
+        self.saml_logger = structlog.get_logger("saml_operations")
     
     def log_scim_request(self, method: str, endpoint: str, request_payload: Dict[str, Any] = None, 
                         response_payload: Dict[str, Any] = None, status_code: int = None, 
                         duration_ms: float = None, success: bool = True, error: str = None):
-        """Log SCIM API requests with full payloads"""
+        """Log SCIM API requests to Datadog with full payloads"""
         log_data = {
-            "action_type": "scim_api_call",
+            "operation_type": "scim_api_call",
             "method": method,
             "endpoint": endpoint,
             "status_code": status_code,
@@ -178,40 +133,61 @@ class ActionLogger:
             log_data["error"] = error
         
         if success:
-            self.logger.info(f"SCIM API call: {method} {endpoint}", **log_data)
+            self.scim_logger.info(f"SCIM API call: {method} {endpoint}", **log_data)
             statsd.increment("scim.api.request.success", tags=[f"method:{method}", f"endpoint:{endpoint}"])
             if duration_ms:
                 statsd.histogram("scim.api.request.duration", duration_ms, tags=[f"method:{method}", f"endpoint:{endpoint}"])
         else:
-            self.logger.error(f"SCIM API call failed: {method} {endpoint}", **log_data)
+            self.scim_logger.error(f"SCIM API call failed: {method} {endpoint}", **log_data)
             statsd.increment("scim.api.request.error", tags=[f"method:{method}", f"endpoint:{endpoint}"])
     
-    def log_sync_operation(self, operation_type: str, entity_type: str, entity_id: int, 
-                          datadog_id: str = None, success: bool = True, error: str = None, 
-                          sync_data: Dict[str, Any] = None):
-        """Log sync operations between local DB and Datadog"""
+    def log_saml_login(self, operation: str, user_email: str = None, success: bool = True, 
+                      error: str = None, saml_data: Dict[str, Any] = None):
+        """Log SAML authentication operations"""
         log_data = {
-            "action_type": "sync_operation",
-            "operation_type": operation_type,  # create, update, delete, deactivate
-            "entity_type": entity_type,  # user, group
-            "entity_id": entity_id,
-            "datadog_id": datadog_id,
+            "operation_type": "saml_authentication",
+            "operation": operation,  # login_initiated, auth_success, auth_failed, response_generated
+            "user_email": user_email,
             "success": success,
             "timestamp": datetime.utcnow().isoformat()
         }
         
-        if sync_data:
-            log_data["sync_data"] = self._sanitize_payload(sync_data)
+        if saml_data:
+            log_data["saml_data"] = self._sanitize_payload(saml_data)
         
         if error:
             log_data["error"] = error
         
         if success:
-            self.logger.info(f"Sync {operation_type} {entity_type} successful", **log_data)
-            statsd.increment("scim.sync.success", tags=[f"operation:{operation_type}", f"entity:{entity_type}"])
+            self.saml_logger.info(f"SAML {operation}", **log_data)
+            statsd.increment("saml.operation.success", tags=[f"operation:{operation}"])
         else:
-            self.logger.error(f"Sync {operation_type} {entity_type} failed", **log_data)
-            statsd.increment("scim.sync.error", tags=[f"operation:{operation_type}", f"entity:{entity_type}"])
+            self.saml_logger.error(f"SAML {operation} failed", **log_data)
+            statsd.increment("saml.operation.error", tags=[f"operation:{operation}"])
+    
+    def log_saml_metadata(self, operation: str, entity_id: str = None, success: bool = True, 
+                         error: str = None, metadata_info: Dict[str, Any] = None):
+        """Log SAML metadata operations"""
+        log_data = {
+            "operation_type": "saml_metadata",
+            "operation": operation,  # upload, generate, parse
+            "entity_id": entity_id,
+            "success": success,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        if metadata_info:
+            log_data["metadata_info"] = self._sanitize_payload(metadata_info)
+        
+        if error:
+            log_data["error"] = error
+        
+        if success:
+            self.saml_logger.info(f"SAML metadata {operation}", **log_data)
+            statsd.increment("saml.metadata.success", tags=[f"operation:{operation}"])
+        else:
+            self.saml_logger.error(f"SAML metadata {operation} failed", **log_data)
+            statsd.increment("saml.metadata.error", tags=[f"operation:{operation}"])
     
     def _sanitize_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Remove sensitive data from payloads before logging"""
@@ -221,7 +197,7 @@ class ActionLogger:
         sanitized = payload.copy()
         
         # Remove sensitive fields
-        sensitive_fields = ["password", "token", "secret", "key", "authorization"]
+        sensitive_fields = ["password", "token", "secret", "key", "authorization", "bearer", "privateKey"]
         for field in sensitive_fields:
             if field in sanitized:
                 sanitized[field] = "***REDACTED***"
@@ -251,5 +227,5 @@ class TimingContext:
         if self.start_time:
             self.duration_ms = (time.time() - self.start_time) * 1000
 
-# Global logger instance
-action_logger = ActionLogger() 
+# Global logger instance - focused on SCIM and SAML only
+action_logger = FocusedLogger() 
