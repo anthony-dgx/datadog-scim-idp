@@ -182,14 +182,14 @@ echo "SAML_KEY=$(awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' saml.key)"
 ```
 
 ### Step 3: Configure Environment Variables
-Edit your `.env` file with **required** values:
+Edit your `.env` file with the required values (see **Environment Configuration** section above for details):
 ```bash
-# Get these from Datadog → Organization Settings → API Keys
+# Add your Datadog API key and site
 DD_API_KEY=your_datadog_api_key_here
-DD_BEARER_TOKEN=your_datadog_api_key_here  # Can use same key
-DD_SITE=datadoghq.com  # Or your Datadog site (eu, us3, etc.)
+DD_BEARER_TOKEN=your_datadog_api_key_here
+DD_SITE=datadoghq.com
 
-# SAML IdP Configuration (copy the output from step 2)
+# Add SAML certificates (copy the output from step 2)
 SAML_ISSUER=http://localhost:8000/saml/metadata
 SAML_CERT=-----BEGIN CERTIFICATE-----\nYOUR_CERTIFICATE_HERE\n-----END CERTIFICATE-----
 SAML_KEY=-----BEGIN PRIVATE KEY-----\nYOUR_PRIVATE_KEY_HERE\n-----END PRIVATE KEY-----
