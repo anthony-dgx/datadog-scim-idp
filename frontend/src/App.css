@@ -264,7 +264,7 @@ a:hover {
 
 .btn-primary {
   background: linear-gradient(135deg, #632ca6 0%, #7c3aed 100%);
-  color: white;
+  color: white!important;
   box-shadow: 0 2px 4px rgba(99, 44, 166, 0.2);
 }
 
@@ -298,7 +298,7 @@ a:hover {
 
 .btn-danger {
   background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-  color: white;
+  color: white!important;
 }
 
 .btn-danger:hover {
