@@ -35,14 +35,14 @@ This demo application provides a complete identity management platform with thes
 
 ### 🔐 **SAML Identity Provider**
 - **Full SAML 2.0 Authentication**: Acts as Identity Provider for testing SAML SSO flows
-- **SAML JIT Provisioning**: Automatically creates users during first SAML login
+- **SAML JIT Provisioning**: Automatically creates users in Datadog during SAML authentication
 - **Role-Based Access Control**: Assigns roles based on SAML attributes from IdP
 - **Secure Redirects**: OAuth-like redirect URL validation and handling
 
-### 👥 **SCIM Provisioning**
-- **User Management**: Create, update, sync, and deactivate users
+### 👥 **User Provisioning (Two Sync Approaches)**
+- **SCIM Provisioning**: Create users in IdP → manually sync to Datadog via SCIM API
+- **JIT Provisioning**: Create users in IdP → automatically sync to Datadog during SAML login
 - **Group Management**: Organize users into teams and sync to Datadog
-- **Automated Sync**: Push users and groups to Datadog via SCIM API
 - **Bulk Operations**: Sync multiple users/groups at once
 
 ### 🎭 **Role Management**
@@ -117,27 +117,74 @@ docker-compose up --build
 
 ## 🎯 How to Use
 
-### 1. **Create Users & Groups**
-1. Go to **Users** tab → Add users with email, name, title
-2. Go to **Groups** tab → Create groups and assign members
-3. Use **Sync** buttons to push to Datadog via SCIM
+You have **two approaches** for user provisioning - choose the one that fits your needs:
 
-### 2. **Setup Role Mapping**
-1. Go to **Role Mapping** tab → Create roles
-2. Map IdP role values to application roles (e.g., `admin` → `Administrator`)
-3. Use **Assign Users** to manually assign roles to users
+### 🤔 **Which Sync Approach Should You Choose?**
 
-### 3. **Configure SAML Authentication**
-1. Go to **SAML Config** tab → Upload Datadog's SP metadata
-2. Enable **JIT Provisioning** for automatic user creation
-3. Download IdP metadata and configure in Datadog
-4. Test SAML login flow
+Both approaches require **admin to create users in the IdP first**. The difference is **when/how users get created in Datadog**:
 
-### 4. **Test Complete Flow**
-1. **SAML Login**: Users authenticate via SAML from Datadog
-2. **JIT Provisioning**: New users created automatically with roles
-3. **Role Assignment**: Users get roles based on SAML attributes
-4. **SCIM Sync**: Users optionally synced to Datadog
+| **SCIM Provisioning** | **JIT Provisioning** |
+|---|---|
+| ✅ **Immediate sync control** | ✅ **Automatic sync on login** |
+| ✅ **Bulk sync operations** | ✅ **No manual sync required** |
+| ✅ **Pre-provision before login** | ✅ **Users only created when needed** |
+| ✅ **Good for planned rollouts** | ✅ **Great for gradual adoption** |
+| ❌ **Requires manual sync step** | ❌ **Users must authenticate first** |
+| ❌ **More administrative overhead** | ❌ **No control over sync timing** |
+
+**💡 Pro Tip**: You can use both approaches together! Sync some users via SCIM and let others be created via JIT.
+
+### 📋 **Approach 1: SCIM Provisioning (Manual Sync)**
+*Best for: Pre-planning users, bulk operations, immediate provisioning*
+
+1. **Create Users & Groups in IdP**
+   - Go to **Users** tab → Add users with email, name, title
+   - Go to **Groups** tab → Create groups and assign members
+   - Assign roles to users if needed
+
+2. **Manually Sync to Datadog**
+   - Use **Sync** buttons to push users/groups to Datadog via SCIM
+   - Users are immediately available in Datadog
+   - No authentication required for provisioning
+
+3. **Configure SAML Authentication**
+   - Go to **SAML Config** tab → Upload Datadog's SP metadata
+   - Download IdP metadata and configure in Datadog
+   - Test SAML login with existing users
+
+### ⚡ **Approach 2: JIT Provisioning (Automatic Sync)**
+*Best for: On-demand provisioning, minimal admin overhead*
+
+1. **Create Users in IdP First**
+   - Go to **Users** tab → Add users with email, name, title
+   - ⚠️ **Important**: Users must exist in IdP before they can login
+   - Assign roles to users if needed
+
+2. **Configure SAML with JIT**
+   - Go to **SAML Config** tab → Upload Datadog's SP metadata  
+   - ✅ **Enable JIT Provisioning** checkbox
+   - Configure default roles for new users
+   - Download IdP metadata and configure in Datadog
+
+3. **Test JIT Flow**
+   ```
+   📋 Step-by-step JIT Flow:
+   1. Admin creates user account in IdP (this application)
+   2. User attempts to login to Datadog
+   3. Datadog redirects user to IdP for authentication
+   4. User enters credentials in IdP login form
+   5. IdP validates credentials:
+      ✅ If user exists in IdP → Authentication succeeds → User created in Datadog automatically
+      ❌ If user doesn't exist in IdP → Authentication fails → "User not found" error
+   ```
+
+### 🔄 **Complete Authentication Flow**
+Regardless of sync approach chosen:
+1. **User Exists in IdP**: Admin must create user in IdP first
+2. **SAML Login**: Users authenticate via SAML from Datadog  
+3. **IdP Validation**: IdP checks if user exists and authenticates
+4. **Role Assignment**: Users get roles based on SAML attributes
+5. **Access Control**: Users gain appropriate permissions in Datadog
 
 ---
 
@@ -174,11 +221,11 @@ docker-compose up --build
 
 ### Key Features Explained
 
-#### SAML JIT Provisioning
-- **Automatic User Creation**: Users created on first SAML login
-- **Attribute Mapping**: User details populated from SAML assertions
-- **Role Assignment**: Default roles assigned during creation
-- **Configurable**: Enable/disable via UI or environment variables
+#### User Provisioning Options
+- **SCIM Provisioning**: Create users in IdP → manually sync to Datadog via SCIM API
+- **JIT Provisioning**: Create users in IdP → automatically sync to Datadog during SAML authentication
+- **User Validation**: Users must exist in IdP before authentication (both approaches)
+- **Flexible Configuration**: Choose the sync approach that fits your workflow
 
 #### Role Mapping System
 - **Dynamic Assignment**: Map IdP roles to local roles
@@ -336,6 +383,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ---
 
-**Made with ❤️ for the Datadog community**
+**Made with ❤️ by Anthony and Claude for the Datadog community**
 
 *Perfect for learning SAML and SCIM protocols in a hands-on environment!* 
