@@ -40,7 +40,7 @@ This demo application provides a complete identity management platform with thes
 - **Secure Redirects**: OAuth-like redirect URL validation and handling
 
 ### 👥 **User Provisioning (Two Sync Approaches)**
-- **SCIM Provisioning**: Create users in IdP → manually sync to Datadog via SCIM API
+- **SCIM Provisioning**: Create users in IdP → assign to Datadog → all future updates auto-sync
 - **JIT Provisioning**: Create users in IdP → automatically sync to Datadog during SAML login
 - **Group Management**: Organize users into teams and sync to Datadog
 - **Bulk Operations**: Sync multiple users/groups at once
@@ -56,6 +56,34 @@ This demo application provides a complete identity management platform with thes
 - **Real-time Status**: Track sync status, errors, and operations
 - **Comprehensive Logging**: All operations logged and sent to Datadog
 - **Docker Support**: Full containerization with monitoring
+
+---
+
+## 📸 Application Screenshots
+
+Here's what the application looks like in action:
+
+> **📝 Note**: To add these screenshots to your repository, save the images as:
+> - `images/users-management.png`
+> - `images/groups-management.png` 
+> - `images/role-mapping.png`
+> - `images/saml-config.png`
+
+### 👥 User Management
+![Users Management](images/users-management.png)
+*Manage users with automatic sync status, SCIM integration, and role assignments*
+
+### 📁 Group Management  
+![Groups Management](images/groups-management.png)
+*Organize users into teams with automatic Datadog synchronization*
+
+### 🎭 Role Mapping
+![Role Mapping](images/role-mapping.png)
+*Configure SAML role mappings with comprehensive user assignment interface*
+
+### 🔐 SAML Configuration
+![SAML Configuration](images/saml-config.png)
+*Setup SAML authentication with JIT provisioning and metadata management*
 
 ---
 
@@ -121,33 +149,44 @@ You have **two approaches** for user provisioning - choose the one that fits you
 
 ### 🤔 **Which Sync Approach Should You Choose?**
 
-Both approaches require **admin to create users in the IdP first**. The difference is **when/how users get created in Datadog**:
+Both approaches require **admin to create users in the IdP first**. The difference is **when/how users get synced to Datadog and ongoing management**:
+
+**📋 SCIM is recommended** for most use cases due to its complete lifecycle management capabilities.
 
 | **SCIM Provisioning** | **JIT Provisioning** |
 |---|---|
-| ✅ **Immediate sync control** | ✅ **Automatic sync on login** |
-| ✅ **Bulk sync operations** | ✅ **No manual sync required** |
+| ✅ **One-time assignment to Datadog** | ✅ **Automatic sync on login** |
+| ✅ **All future updates auto-sync** | ✅ **No manual sync required** |
 | ✅ **Pre-provision before login** | ✅ **Users only created when needed** |
-| ✅ **Good for planned rollouts** | ✅ **Great for gradual adoption** |
-| ❌ **Requires manual sync step** | ❌ **Users must authenticate first** |
-| ❌ **More administrative overhead** | ❌ **No control over sync timing** |
+| ✅ **Bulk sync operations** | ✅ **Great for gradual adoption** |
+| ✅ **Full ongoing lifecycle management** | ❌ **Users must authenticate first** |
+| ❌ **Requires initial assignment step** | ❌ **No control over sync timing** |
 
-**💡 Pro Tip**: You can use both approaches together! Sync some users via SCIM and let others be created via JIT.
+**💡 Pro Tip**: You can use both approaches together! Assign some users via SCIM for full lifecycle management and let others be created via JIT for simplicity.
 
-### 📋 **Approach 1: SCIM Provisioning (Manual Sync)**
-*Best for: Pre-planning users, bulk operations, immediate provisioning*
+### 📋 **Approach 1: SCIM Provisioning (Recommended)**
+*Best for: Full lifecycle management, ongoing sync, enterprise workflows*
 
 1. **Create Users & Groups in IdP**
    - Go to **Users** tab → Add users with email, name, title
    - Go to **Groups** tab → Create groups and assign members
    - Assign roles to users if needed
+   
+   ![User Management Interface](images/users-management.png)
+   *The Users interface showing sync status and management options*
 
-2. **Manually Sync to Datadog**
-   - Use **Sync** buttons to push users/groups to Datadog via SCIM
+2. **Assign Users to Datadog (One-time)**
+   - Use **Sync** buttons to assign users/groups to Datadog via SCIM
    - Users are immediately available in Datadog
-   - No authentication required for provisioning
+   - ✨ **All future updates automatically sync to Datadog**
 
-3. **Configure SAML Authentication**
+3. **Ongoing Management**
+   - Update user details, roles, group memberships in IdP
+   - Changes automatically sync to Datadog via SCIM
+   - Deactivate users → automatically deactivated in Datadog
+   - No manual intervention required after initial assignment
+
+4. **Configure SAML Authentication**
    - Go to **SAML Config** tab → Upload Datadog's SP metadata
    - Download IdP metadata and configure in Datadog
    - Test SAML login with existing users
@@ -165,6 +204,9 @@ Both approaches require **admin to create users in the IdP first**. The differen
    - ✅ **Enable JIT Provisioning** checkbox
    - Configure default roles for new users
    - Download IdP metadata and configure in Datadog
+   
+   ![SAML Configuration Interface](images/saml-config.png)
+   *SAML Configuration showing JIT provisioning options and metadata management*
 
 3. **Test JIT Flow**
    ```
@@ -222,10 +264,10 @@ Regardless of sync approach chosen:
 ### Key Features Explained
 
 #### User Provisioning Options
-- **SCIM Provisioning**: Create users in IdP → manually sync to Datadog via SCIM API
+- **SCIM Provisioning**: Create users in IdP → one-time assignment to Datadog → ongoing auto-sync
 - **JIT Provisioning**: Create users in IdP → automatically sync to Datadog during SAML authentication
 - **User Validation**: Users must exist in IdP before authentication (both approaches)
-- **Flexible Configuration**: Choose the sync approach that fits your workflow
+- **Lifecycle Management**: SCIM provides full ongoing sync, JIT is login-triggered only
 
 #### Role Mapping System
 - **Dynamic Assignment**: Map IdP roles to local roles
@@ -235,7 +277,9 @@ Regardless of sync approach chosen:
 
 #### SCIM Integration
 - **Full CRUD Operations**: Create, read, update, delete users/groups
-- **Datadog Sync**: Push users and groups to Datadog
+- **One-time Assignment**: Initial sync to assign users to Datadog
+- **Automatic Ongoing Sync**: All future updates automatically push to Datadog
+- **Complete Lifecycle**: User updates, deactivations, role changes auto-sync
 - **Error Handling**: Comprehensive error handling and retries
 - **Bulk Operations**: Sync multiple entities at once
 
