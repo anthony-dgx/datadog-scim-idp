@@ -229,12 +229,12 @@ Regardless of sync approach chosen:
 ### Container Stack
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   React Frontend │    │  FastAPI Backend │    │   PostgreSQL    │
+│   React Frontend│    │  FastAPI Backend│    │   PostgreSQL    │
 │  (Port 3000)    │────│  (Port 8000)    │────│  (Port 5433)    │
 │                 │    │                 │    │                 │
-│  - User Interface│    │  - SAML IdP     │    │  - User Data    │
-│  - Role Management│   │  - SCIM Client  │    │  - Role Mapping │
-│  - SAML Config   │    │  - Role API     │    │  - Groups       │
+│ - User Interface│    │  - SAML IdP     │    │  - User Data    │
+│ - Role Mngmt    │    │  - SCIM Client  │    │  - Role Mapping │
+│ - SAML Config   │    │  - Role API     │    │  - Groups       │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
                                 │
                     ┌───────────┼───────────┐
