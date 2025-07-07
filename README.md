@@ -63,12 +63,6 @@ This demo application provides a complete identity management platform with thes
 
 Here's what the application looks like in action:
 
-> **📝 Note**: To add these screenshots to your repository, save the images as:
-> - `images/users-management.png`
-> - `images/groups-management.png` 
-> - `images/role-mapping.png`
-> - `images/saml-config.png`
-
 ### 👥 User Management
 ![Users Management](images/users-management.png)
 *Manage users with automatic sync status, SCIM integration, and role assignments*
